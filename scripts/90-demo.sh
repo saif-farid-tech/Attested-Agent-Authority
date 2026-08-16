@@ -18,6 +18,9 @@ source scripts/lib/detect.sh
 guard_host
 need lxc "lxd (snap)"
 require_script "$AAA_STATE/ssh_ca" scripts/60-fleet.sh
+require_script "$AAA_STATE/allowlist.txt" scripts/70-baseline.sh
+# Baselines made before the volatile-path calibration cannot restart cleanly.
+require_script "$AAA_STATE/volatile-paths.txt" "scripts/70-baseline.sh (make rebaseline)"
 
 narrate() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 beat()    { printf '   %s\n' "$*"; }
@@ -30,11 +33,16 @@ agent_touches_fleet() {  # can the agent still act on web-01, right now?
          -o LogLevel=ERROR harden@web-01 true' >/dev/null 2>&1
 }
 
+# NOTE the absence of `| head -1`: under `set -o pipefail`, head closes the
+# pipe on its first line and SIGPIPEs the upstream process, so the whole
+# command substitution "fails" and the ERR trap fires mid-narration. Read the
+# text to EOF, then take the first line in the shell. Same lesson as lxc_says.
 cert_seconds_left() {
-  local exp
-  exp=$(vm_exec sh -c 'ssh-keygen -L -f /etc/ssh/harden-cert.pub 2>/dev/null' \
-        | sed -n 's/.* to \(.*\)$/\1/p' | head -1)
-  local exp_s; exp_s=$(date -d "$exp" +%s 2>/dev/null || echo 0)
+  local out exp exp_s
+  out=$(vm_exec sh -c 'ssh-keygen -L -f /etc/ssh/harden-cert.pub 2>/dev/null' 2>/dev/null || true)
+  # 'sed -n 1p' reads to EOF (unlike head -1) so nothing upstream is SIGPIPEd.
+  exp=$(printf '%s\n' "$out" | sed -n 's/.* to \(.*\)$/\1/p' | sed -n '1p')
+  exp_s=$(date -d "$exp" +%s 2>/dev/null || echo 0)
   echo $(( exp_s - $(date +%s) ))
 }
 
@@ -109,13 +117,13 @@ console_event act "stage set: web-01 world-writable config + stale /tmp · db-01
 narrate "ACT 2 — the verifier funds the agent"
 log "waiting for a certificate inside the VM (the verifier signs on each passing cycle)…"
 funded=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 48); do
   if agent_touches_fleet; then funded=yes; break; fi
   sleep 5
 done
-[ -n "$funded" ] || die "no working certificate appeared after 150s" \
+[ -n "$funded" ] || die "no working certificate appeared after 240s" \
     "the verifier is running but never issued a cert — attestation is not passing" \
-    "make verify   # the six-stage diagnostic names the failing stage"
+    "make doctor   # checks the whole chain and names the failing link"
 beat "certificate valid for $(cert_seconds_left)s — the agent is FUNDED."
 
 narrate "ACT 3 — the agent earns its keep"
@@ -158,7 +166,14 @@ fi
 
 narrate "ACT 5 — the real move: the agent rewrites its own constraint"
 vm_exec sh -c "cp /etc/apparmor.d/harden $AAA_VM_STATE/profile.orig"
-vm_exec --user harden python3 "$AAA_VM_STATE/agent.py" --tamper
+# If this write is refused, the ERR trap used to abort the demo here with a
+# bare line number. The premise of the whole project is that it SUCCEEDS, so
+# name the cause instead (bug #20: AppArmor cannot grant what DAC denies).
+trc=0
+vm_exec --user harden python3 "$AAA_VM_STATE/agent.py" --tamper || trc=$?
+[ "$trc" -eq 0 ] || die "the agent could not write its own AppArmor profile" \
+    "ACT 5 depends on that write succeeding; the file's owner/mode denies it" \
+    "lxc exec $AAA_VM -- ls -l /etc/apparmor.d/harden  # expect 0644 harden:harden, then: scripts/40-apparmor.sh"
 vm_exec apparmor_parser -r /etc/apparmor.d/harden   # the changed profile is read — and measured
 console_event act "agent writes to /etc/apparmor.d/harden — the write SUCCEEDS"
 beat "no error. No alarm. And look —"
@@ -178,22 +193,37 @@ beat "The verifier does exactly one thing about it: it stops signing."
 
 narrate "ACT 7 — the silent drain"
 beat "no process is killed, no session cut. The agent works on borrowed time:"
-while true; do
+# Bounded on purpose. This loop used to be `while true`, so anything that kept
+# the certificate alive — a second verifier still funding, a tamper that never
+# landed — hung the demo forever with no explanation. The drain cannot outlast
+# the certificate TTL plus one attestation interval by much; give it slack,
+# then say what went wrong.
+drain_deadline=$(( $(date +%s) + ${AAA_DRAIN_TIMEOUT:-300} ))
+drained=""
+while [ "$(date +%s)" -lt "$drain_deadline" ]; do
   left=$(cert_seconds_left)
   if agent_touches_fleet; then
     beat "$(printf '%3ss left — fleet still obeys' "$left")"
-    [ "$left" -gt 0 ] || true
   else
     beat "  0s — the fleet refuses. Authority has run out."
+    drained=yes
     break
   fi
   sleep 10
 done
-if vm_exec --user harden python3 "$AAA_VM_STATE/agent.py" | grep -q "NO AUTHORITY"; then
-  beat "every host: NO AUTHORITY. The agent still has root — over nothing but itself."
-else
-  warn "expected NO AUTHORITY from every host"
-fi
+[ -n "$drained" ] || die "the certificate never stopped working" \
+    "attestation is still passing, so the verifier kept funding the agent — the tamper did not take" \
+    "make verify   # expect exit 2 here; if it exits 0 the profile write never landed"
+# Capture, then match. `… | grep -q` SIGPIPEs the agent under pipefail and the
+# pipeline reports failure even when the match SUCCEEDED (see lxc_says).
+after=$(vm_exec --user harden python3 "$AAA_VM_STATE/agent.py" 2>&1 || true)
+case "$after" in
+  *"NO AUTHORITY"*)
+    beat "every host: NO AUTHORITY. The agent still has root — over nothing but itself." ;;
+  *)
+    warn "expected NO AUTHORITY from every host; the agent said:"
+    printf '%s\n' "$after" | sed 's/^/        /' >&2 ;;
+esac
 
 narrate "ACT 8 — repentance (the actual climax)"
 beat "the agent puts the original profile back, byte for byte:"

@@ -83,8 +83,8 @@ if [ ! -f "$AAA_STATE/workload_ed25519" ]; then
   ok "generated verifier SSH key at $AAA_STATE/workload_ed25519"
 fi
 vm_exec sh -c 'mkdir -p /home/attest/.ssh && chmod 700 /home/attest/.ssh'
-vm_push "$AAA_STATE/workload_ed25519.pub" /home/attest/.ssh/authorized_keys
-vm_exec sh -c 'chown -R attest:attest /home/attest/.ssh && chmod 600 /home/attest/.ssh/authorized_keys'
+vm_push "$AAA_STATE/workload_ed25519.pub" /home/attest/.ssh/authorized_keys 0600 attest:attest
+vm_exec sh -c 'chown -R attest:attest /home/attest/.ssh'
 ok "verifier key authorised for attest@$AAA_VM_ADDR"
 
 # ---- IMA policy (bugs #1 and #3) ------------------------------------------
@@ -110,7 +110,16 @@ measure func=MMAP_CHECK mask=MAY_EXEC
 measure func=FILE_CHECK mask=MAY_READ uid=0
 EOF
 vm_exec mkdir -p /etc/ima
-vm_push "$tmp_policy" /etc/ima/ima-policy
+# Did the policy actually change? That, not the presence of a log, is what
+# decides whether a reboot is needed below.
+policy_changed=1
+if vm_exec test -f /etc/ima/ima-policy 2>/dev/null; then
+  old_policy=$(mktemp)
+  lxc file pull "$AAA_VM/etc/ima/ima-policy" "$old_policy" 2>/dev/null || true
+  cmp -s "$old_policy" "$tmp_policy" && policy_changed=0
+  rm -f "$old_policy"
+fi
+vm_push "$tmp_policy" /etc/ima/ima-policy 0644 root:root
 rm -f "$tmp_policy"
 ok "IMA policy installed at /etc/ima/ima-policy (loaded by systemd at boot)"
 
@@ -121,12 +130,19 @@ if vm_exec sh -c 'grep -q "ima_policy=tcb" /etc/default/grub /proc/cmdline 2>/de
 fi
 
 # ---- reboot so the policy takes effect from early boot ---------------------
-if vm_exec sh -c '[ -s /sys/kernel/security/ima/ascii_runtime_measurements ]'; then
-  log "IMA measurement log already populated — no reboot needed"
+# bug #19: this used to skip the reboot whenever the log was merely NON-EMPTY.
+# A VM that has never loaded a policy still has exactly one line in that log —
+# the boot_aggregate the kernel always writes — so the test was true on a
+# fresh build, the reboot was skipped, the policy never loaded, and the check
+# below then failed the FIRST build with "IMA measurement log is empty".
+# Reboot when the policy changed, or when the log holds nothing but the
+# boot aggregate.
+measured=$(vm_exec sh -c 'wc -l < /sys/kernel/security/ima/ascii_runtime_measurements' 2>/dev/null || echo 0)
+if [ "$policy_changed" -eq 0 ] && [ "${measured:-0}" -gt 10 ]; then
+  log "IMA policy unchanged and $measured measurements present — no reboot needed"
 else
-  log "rebooting VM so the IMA policy applies from boot…"
-  lxc restart "$AAA_VM"
-  wait_vm_ready
+  log "cold-booting VM so the IMA policy applies from boot…"
+  cold_boot_vm
 fi
 
 # ---- verify outcome --------------------------------------------------------

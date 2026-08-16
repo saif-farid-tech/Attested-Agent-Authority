@@ -36,7 +36,7 @@ else
 fi
 
 # ---- host directories ------------------------------------------------------
-for dir in /var/lib/harden "$HOME/attested-agent"; do
+for dir in /var/lib/harden "$AAA_STATE"; do
   # Refuse to remove anything that could be personal. Belt and braces: these
   # paths are constants, but check anyway before rm -rf.
   case "$dir" in
@@ -62,6 +62,16 @@ else
   note_absent "/etc/apparmor.d/harden (host)"
 fi
 
+# ---- generated console state ----------------------------------------------
+# status.json is written by the verifier, not shipped by the repo. Leaving a
+# dead one behind makes the next console open on a run that already ended.
+if [ -e console/status.json ]; then
+  rm -f console/status.json console/status.json.tmp
+  note_removed "console/status.json (generated)"
+else
+  note_absent "console/status.json (generated)"
+fi
+
 # ---- verify the machine is clean ------------------------------------------
 if command -v lxc >/dev/null 2>&1; then
   leftovers=$(lxc list -f csv -c n 2>/dev/null | grep -Ex "$AAA_VM|web-01|db-01|gw-01" || true)
@@ -76,9 +86,9 @@ if command -v lxc >/dev/null 2>&1; then
   [ "$net_present" -eq 0 ] || die "network $AAA_NET still present" \
       "network delete failed" "lxc network delete $AAA_NET"
 fi
-[ ! -e /var/lib/harden ] && [ ! -e "$HOME/attested-agent" ] || \
+[ ! -e /var/lib/harden ] && [ ! -e "$AAA_STATE" ] || \
   die "host directories still present" "rm failed" \
-      "sudo rm -rf /var/lib/harden ~/attested-agent"
+      "sudo rm -rf /var/lib/harden $AAA_STATE"
 
 echo
 log "teardown complete: ${#removed[@]} removed, ${#absent[@]} already absent"

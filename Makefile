@@ -5,7 +5,7 @@
 SHELL := /bin/bash
 CONSOLE_PORT ?= 9000
 
-.PHONY: help preflight build verify demo rebaseline console measure reset teardown doctor
+.PHONY: help preflight build verify demo rebaseline console measure reset teardown doctor selftest
 
 help:
 	@echo "attested-agent-authority"
@@ -13,6 +13,7 @@ help:
 	@echo "  make preflight    environment checks only (changes nothing)"
 	@echo "  make build        full build from scratch (~20 min), ends at a passing verify"
 	@echo "  make doctor       one-shot health check of the whole chain (run this when stuck)"
+	@echo "  make selftest     check the scripts and the verifier logic (no LXD needed)"
 	@echo "  make verify       run the six-stage attestation diagnostic"
 	@echo "  make demo         run/RESTART the demo — resets to a clean state first"
 	@echo "  make reset        return to the clean, passing state (cold-boot restore)"
@@ -41,6 +42,17 @@ build: preflight
 
 doctor:
 	scripts/doctor.sh
+
+# Runs anywhere — no LXD, no VM, no TPM. Catches the class of bug that used to
+# be found only halfway through a recording: a shell script that parses wrong,
+# and the measurement-log logic the restart depends on.
+selftest:
+	@for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$$f" || exit 1; done
+	@echo "  ok  all shell scripts parse"
+	@python3 -m py_compile agent/agent.py verifier/*.py
+	@echo "  ok  python sources compile"
+	@python3 tests/test_imalog.py
+	@python3 tests/test_restart_scenario.py
 
 verify:
 	scripts/80-verify.sh

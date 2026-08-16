@@ -16,8 +16,20 @@ AAA_FLEET=(web-01 db-01 gw-01)           # fleet containers behind the CA
 AAA_STATE="${AAA_STATE:-$HOME/attested-agent}"   # host-side verifier state
 AAA_VM_STATE="/var/lib/harden"           # inside the VM: TPM contexts, agent
 AAA_SNAPSHOT="demo-ready"                # taken by 70-baseline, used by demo
-AAA_VM_ADDR="${AAA_VM_ADDR:-10.147.0.10}"   # pinned; DHCP reassigns otherwise
 AAA_NET_CIDR="${AAA_NET_CIDR:-10.147.0.1/24}"
+# Every address is derived from the bridge's subnet, so overriding
+# AAA_NET_CIDR moves the whole demo together instead of half of it.
+_aaa_gw=${AAA_NET_CIDR%/*}; _aaa_pfx=${_aaa_gw%.*}
+AAA_VM_ADDR="${AAA_VM_ADDR:-$_aaa_pfx.10}"  # pinned; DHCP reassigns otherwise
+# bug #16: the fleet's addresses are pinned too. The VM resolves fleet names
+# from an /etc/hosts frozen into the demo-ready snapshot; if a container came
+# back on a new DHCP lease, that file pointed at nothing and the agent could
+# never reach the fleet — the demo "worked yesterday" and failed today.
+declare -A AAA_FLEET_ADDR=(
+  [web-01]="$_aaa_pfx.11"
+  [db-01]="$_aaa_pfx.12"
+  [gw-01]="$_aaa_pfx.13"
+)
 AAA_CONSOLE_PORT="${AAA_CONSOLE_PORT:-9000}"
 # the python tools (verifier, diagnostic) read these from the environment
 export AAA_STATE AAA_VM_ADDR
@@ -90,8 +102,17 @@ vm_exec() {
   lxc exec "$AAA_VM" -- sudo -u "$u" -- "$@"
 }
 
-# vm_push SRC DST — push a file into the workload VM.
-vm_push() { lxc file push --create-dirs "$1" "$AAA_VM$2"; }
+# vm_push SRC DST [MODE] [OWNER:GROUP] — push a file into the workload VM.
+#
+# bug #12 generalised: `lxc file push` copies the SOURCE file's mode and uid,
+# and every caller here pushes from mktemp — mode 0600, owned by whoever ran
+# the script. Anything the VM must read as another user therefore lands
+# unreadable. Always state the mode you mean; never inherit mktemp's.
+vm_push() {
+  lxc file push --create-dirs "$1" "$AAA_VM$2"
+  if [ -n "${3:-}" ]; then lxc exec "$AAA_VM" -- chmod "$3" "$2"; fi
+  if [ -n "${4:-}" ]; then lxc exec "$AAA_VM" -- chown "$4" "$2"; fi
+}
 
 instance_exists() { lxc info "$1" >/dev/null 2>&1; }
 
@@ -117,6 +138,62 @@ wait_vm_ready() {  # wait for the LXD agent inside the VM to answer
       "the LXD agent inside the guest never answered" \
       "lxc console $AAA_VM  # watch the boot, then re-run this script"
 }
+
+# wait_vm_settled — the LXD agent answering is NOT the same as the VM being
+# usable. Attestation needs sshd listening and the IMA policy loaded; asking
+# for those a few seconds too early is the difference between "the demo works"
+# and "the demo works on the second try" (bug #17).
+wait_vm_settled() {
+  wait_vm_ready
+  local tries=${1:-90}
+  for _ in $(seq 1 "$tries"); do
+    if lxc exec "$AAA_VM" -- sh -c '
+         (systemctl is-active ssh >/dev/null 2>&1 ||
+          systemctl is-active sshd >/dev/null 2>&1) &&
+         [ "$(wc -l < /sys/kernel/security/ima/ascii_runtime_measurements)" -gt 10 ]
+       ' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  die "VM '$AAA_VM' came up but never settled" \
+      "sshd is not listening, or the IMA policy did not load at boot" \
+      "make doctor   # names the failing piece"
+}
+
+# cold_boot_vm — a real power cycle, not a warm restart. The IMA measurement
+# log lives in kernel memory: only a fresh boot regenerates it (bug #14).
+cold_boot_vm() {
+  lxc stop "$AAA_VM" >/dev/null 2>&1 || lxc stop "$AAA_VM" --force >/dev/null 2>&1 || true
+  lxc start "$AAA_VM" >/dev/null 2>&1 || true
+  wait_vm_settled
+}
+
+# ensure_fleet_up — the fleet containers are not part of the VM snapshot, so
+# a host reboot leaves them stopped while everything else looks healthy. Start
+# them and wait, rather than failing three acts later inside the demo.
+ensure_fleet_up() {
+  local host
+  for host in "${AAA_FLEET[@]}"; do
+    instance_exists "$host" || die "fleet host $host is missing" \
+        "it is created by scripts/60-fleet.sh" "scripts/60-fleet.sh"
+    lxc_says RUNNING info "$host" || lxc start "$host" >/dev/null 2>&1 || true
+  done
+  for host in "${AAA_FLEET[@]}"; do
+    local ready=""
+    for _ in $(seq 1 30); do
+      if lxc exec "$host" -- true >/dev/null 2>&1; then ready=yes; break; fi
+      sleep 2
+    done
+    [ -n "$ready" ] || die "fleet host $host did not become ready" \
+        "the container is not answering" "lxc start $host && lxc info $host"
+  done
+}
+
+# clear_console_events — drop narration left over from an earlier run. Without
+# this the next verifier ingests the previous demo's acts and the console
+# replays a show that is not happening (bug #18).
+clear_console_events() { rm -f "$AAA_STATE/console-events.jsonl"; }
 
 require_script() {  # require_script FILE "provided by" — state prerequisites
   [ -e "$1" ] || die "missing prerequisite: $1" \

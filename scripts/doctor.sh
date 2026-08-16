@@ -35,6 +35,15 @@ if instance_exists "$AAA_VM"; then
   imalines=$(lxc exec "$AAA_VM" -- sh -c 'wc -l < /sys/kernel/security/ima/ascii_runtime_measurements' 2>/dev/null || echo 0)
   [ "${imalines:-0}" -gt 10 ] && P "IMA log populated ($imalines measurements)" || F "IMA log empty — reboot: lxc restart $AAA_VM"
   lxc exec "$AAA_VM" -- sh -c 'aa-status 2>/dev/null | grep -q harden' && P "AppArmor profile 'harden' loaded" || F "profile not loaded — scripts/40-apparmor.sh"
+  # ACT 5 of the demo is exactly this write succeeding (bug #20).
+  if lxc exec "$AAA_VM" -- sh -c 'sudo -u harden test -w /etc/apparmor.d/harden' 2>/dev/null; then
+    P "agent can write its own AppArmor profile (the demo depends on it)"
+  else
+    F "harden cannot write /etc/apparmor.d/harden — scripts/40-apparmor.sh (expect 0644 harden:harden)"
+  fi
+  if lxc exec "$AAA_VM" -- sh -c 'grep -q "# harden self-modification" /etc/apparmor.d/harden' 2>/dev/null; then
+    W "profile carries a tamper line — a demo was interrupted; 'make reset' before rebaselining"
+  fi
   if lxc exec "$AAA_VM" -- test -f /var/lib/harden/agent.py; then P "agent.py deployed"; else F "agent.py missing — scripts/50-agent.sh"; fi
   if lxc exec "$AAA_VM" -- sudo -u harden test -r /var/lib/harden/config.json; then
     P "config.json readable by harden"
@@ -52,9 +61,31 @@ done
 if [ -s "$AAA_STATE/allowlist.txt" ]; then
   n=$(wc -l < "$AAA_STATE/allowlist.txt")
   P "allowlist.txt present ($n entries)"
-  [ -s "$AAA_STATE/allowlist.txt.asc" ] && P "allowlist signed" || W "allowlist not signed — make rebaseline"
+  if [ -s "$AAA_STATE/allowlist.txt.asc" ]; then
+    gpg --verify "$AAA_STATE/allowlist.txt.asc" "$AAA_STATE/allowlist.txt" >/dev/null 2>&1 \
+      && P "allowlist signature verifies" \
+      || F "allowlist signature does NOT verify — make rebaseline"
+  else
+    F "allowlist not signed — make rebaseline"
+  fi
 else
   F "allowlist.txt missing — scripts/70-baseline.sh (make rebaseline)"
+fi
+# Without the calibrated volatile-path list, every cold boot measures files
+# whose content is new by design and attestation can never pass twice (bug #15).
+if [ -s "$AAA_STATE/volatile-paths.txt" ]; then
+  v=$(grep -cv '^#' "$AAA_STATE/volatile-paths.txt" || true)
+  P "volatile-paths.txt present (${v:-0} calibrated path(s))"
+  gpg --verify "$AAA_STATE/volatile-paths.txt.asc" "$AAA_STATE/volatile-paths.txt" >/dev/null 2>&1 \
+    && P "volatile-paths signature verifies" \
+    || F "volatile-paths not signed or signature bad — make rebaseline"
+else
+  F "volatile-paths.txt missing — this baseline predates the calibration; run: make rebaseline"
+fi
+if lxc_says "$AAA_SNAPSHOT" info "$AAA_VM"; then
+  P "snapshot '$AAA_SNAPSHOT' exists (make demo / make reset can restore)"
+else
+  F "snapshot '$AAA_SNAPSHOT' missing — scripts/70-baseline.sh"
 fi
 
 H "fleet"
@@ -66,16 +97,31 @@ for host in "${AAA_FLEET[@]}"; do
     else
       F "$host not trusting the CA — scripts/60-fleet.sh"
     fi
+    # The VM resolves these names from an /etc/hosts frozen into the snapshot,
+    # so an unpinned address silently breaks every future demo (bug #16).
+    want=${AAA_FLEET_ADDR[$host]}
+    if [ "$a" = "$want" ]; then
+      P "$host on its pinned address $want"
+    else
+      F "$host is at ${a:-none}, not the pinned $want — scripts/60-fleet.sh, then make rebaseline"
+    fi
   else
     F "$host missing — scripts/60-fleet.sh"
   fi
 done
 
 H "verifier daemon"
-if pgrep -f "verifier/verifier.py" >/dev/null 2>&1; then
-  P "verifier.py running (funding the agent)"
-else
-  W "verifier.py not running — start with 'make console', or 'make demo' starts its own"
+# `pgrep -c` PRINTS 0 and EXITS 1 when nothing matches, so `|| echo 0` would
+# append a second zero and turn "none running" into the count "0\n0".
+nver=$(pgrep -fc "verifier/verifier.py" 2>/dev/null || true)
+nver=${nver//[^0-9]/}
+case "${nver:-0}" in
+  0) W "verifier.py not running — start with 'make console', or 'make demo' starts its own" ;;
+  1) P "verifier.py running (funding the agent)" ;;
+  *) F "$nver verifiers running — they fight over status.json and the cert; kill all but one" ;;
+esac
+if [ -s "$AAA_STATE/console-events.jsonl" ]; then
+  W "queued console narration is waiting for a verifier ($AAA_STATE/console-events.jsonl)"
 fi
 
 H "end-to-end attestation"

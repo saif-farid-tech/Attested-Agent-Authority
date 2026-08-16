@@ -21,12 +21,18 @@ import tempfile
 import time
 from pathlib import Path
 
+# imalog.py sits beside this file; be explicit about the path because
+# verifier.py imports this module by file location from any working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import imalog  # noqa: E402
+
 STATE = Path(os.environ.get("AAA_STATE", Path.home() / "attested-agent"))
 VM_NAME = os.environ.get("AAA_VM", "harden")
 VM_ADDR_PIN = os.environ.get("AAA_VM_ADDR", "10.147.0.10")
 SSH_KEY = STATE / "workload_ed25519"
 AK_PUB = STATE / "ak.pub"
 ALLOWLIST = STATE / "allowlist.txt"
+VOLATILE = STATE / "volatile-paths.txt"
 SSH_CA = STATE / "ssh_ca"
 AK_HANDLE = "0x81010002"
 IMA_LOG = "/sys/kernel/security/ima/ascii_runtime_measurements"
@@ -94,13 +100,32 @@ def ssh(command: str, binary: bool = False) -> bytes | str:
 
 # ---- stages ----------------------------------------------------------------
 
+def verify_signature(path: Path) -> None:
+    """The allowlist and the volatile-path list are the verifier's whole
+    definition of 'correct'. Both are GPG-signed at baseline time, so check
+    the signature before trusting either — an unsigned or edited allowlist is
+    a broken verifier, not a verdict about the workload."""
+    sig = Path(str(path) + ".asc")
+    if not sig.exists():
+        raise StageFailure(SETUP_FAIL, f"{path.name} is not signed ({sig.name} missing)",
+                           "make rebaseline   # regenerates and signs it")
+    r = subprocess.run(["gpg", "--verify", str(sig), str(path)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise StageFailure(
+            SETUP_FAIL, f"{path.name} does not match its signature",
+            "the file changed after signing (or the signing key is not in this "
+            "keyring): make rebaseline")
+
+
 def stage1_local_state(report):
-    missing = [str(p) for p in (AK_PUB, ALLOWLIST, SSH_CA) if not p.exists()]
+    missing = [str(p) for p in (AK_PUB, ALLOWLIST, VOLATILE, SSH_CA) if not p.exists()]
     if missing:
         raise StageFailure(SETUP_FAIL, f"missing verifier state: {', '.join(missing)}",
                            "scripts/30-tpm-keys.sh creates ak.pub; "
                            "scripts/60-fleet.sh creates ssh_ca; "
-                           "scripts/70-baseline.sh creates allowlist.txt")
+                           "scripts/70-baseline.sh creates allowlist.txt and "
+                           "volatile-paths.txt (make rebaseline)")
     entries = len(ALLOWLIST.read_text().splitlines())
     if entries == 0:
         raise StageFailure(SETUP_FAIL, "allowlist.txt is empty",
@@ -108,11 +133,15 @@ def stage1_local_state(report):
     if entries > 2000:
         report(f"  warn: {entries} allowlist entries — expected ~650–1100; "
                "check for ima_policy=tcb on the kernel line (bug #3)")
-    for tool in ("ssh", "tpm2_checkquote", "ssh-keygen"):
+    for tool in ("ssh", "tpm2_checkquote", "ssh-keygen", "gpg"):
         if not shutil.which(tool):
             raise StageFailure(SETUP_FAIL, f"'{tool}' not on PATH",
-                               "sudo apt install tpm2-tools openssh-client")
-    return f"ak.pub, ssh_ca, allowlist ({entries} entries), tools present"
+                               "sudo apt install tpm2-tools openssh-client gnupg")
+    verify_signature(ALLOWLIST)
+    verify_signature(VOLATILE)
+    volatile = imalog.load_volatile(VOLATILE)
+    return (f"ak.pub, ssh_ca, signed allowlist ({entries} entries), "
+            f"{len(volatile)} calibrated volatile path(s), tools present")
 
 
 def stage2_ssh(report):
@@ -199,20 +228,24 @@ def stage5_checkquote(report, workdir, nonce):
 
 
 def stage6_allowlist(report):
-    allowed = set()
-    for line in ALLOWLIST.read_text().splitlines():
-        if line.strip():
-            allowed.add(line.split()[0])
+    allowed = {line.split()[0] for line in ALLOWLIST.read_text().splitlines()
+               if line.strip()}
+    volatile = imalog.load_volatile(VOLATILE)
     offenders = []
-    # bug #5: IMA writes 'sha256:<hash>'; the allowlist holds bare hashes.
-    # Strip the prefix here or nothing ever matches.
-    for line in ssh(f"sudo -n cat {IMA_LOG}").splitlines():
-        parts = line.split()
-        if len(parts) < 5:
+    skipped = 0
+    # bug #5 (prefix stripping) and the log format both live in imalog.parse,
+    # so this side and the baseline generator can never disagree.
+    for fhash, path in imalog.parse(ssh(f"sudo -n cat {IMA_LOG}")):
+        if fhash in allowed:
             continue
-        fhash = parts[3].split(":", 1)[-1]
-        if fhash and fhash not in allowed:
-            offenders.append(f"{fhash[:16]}…  {parts[4]}")
+        # Calibrated volatile paths (bug #15): files whose CONTENT is new on
+        # every boot or login by design. Their hash is unpredictable, so it is
+        # the path that is excused — and only paths proven to move across
+        # identical runs at baseline time, never the agent's own constraint.
+        if path in volatile:
+            skipped += 1
+            continue
+        offenders.append(f"{fhash[:16]}…  {path}")
     if offenders:
         shown = "\n           ".join(offenders[:5])
         more = f" (+{len(offenders) - 5} more)" if len(offenders) > 5 else ""
@@ -220,7 +253,8 @@ def stage6_allowlist(report):
                            f"{len(offenders)} measurement(s) not on the signed allowlist:"
                            f"\n           {shown}{more}",
                            "if this is a legitimate change: make rebaseline")
-    return f"every measurement recognised ({len(allowed)} allowlist entries)"
+    note = f", {skipped} volatile-path measurement(s) excused" if skipped else ""
+    return f"every measurement recognised ({len(allowed)} allowlist entries{note})"
 
 
 def attest(report=print):
