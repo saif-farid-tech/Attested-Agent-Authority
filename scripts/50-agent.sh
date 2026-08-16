@@ -42,6 +42,11 @@ json.dump({"fleet": fleet,
 EOF
 vm_push "$tmp_cfg" "$AAA_VM_STATE/config.json"
 rm -f "$tmp_cfg"
+# lxc file push preserves the mktemp source mode (0600 root) — make the config
+# readable by the harden user that runs the agent, or it dies reading its own
+# config. Also fix ownership of everything the agent touches under its dir.
+vm_exec sh -c "chown harden:harden $AAA_VM_STATE/config.json $AAA_VM_STATE/agent.py &&
+               chmod 644 $AAA_VM_STATE/config.json"
 ok "agent config written (fleet + model endpoint http://$host_gw:8080)"
 
 # ---- verify outcome --------------------------------------------------------

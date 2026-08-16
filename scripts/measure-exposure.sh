@@ -25,7 +25,8 @@ fleet_accepts() {  # does at least one fleet host still honour the cert?
   vm_exec --user harden sh -c \
     'ssh -i ~/.ssh/id_ed25519 -o CertificateFile=/etc/ssh/harden-cert.pub \
          -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 \
-         -o StrictHostKeyChecking=accept-new harden@web-01 true' >/dev/null 2>&1
+         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+         -o LogLevel=ERROR harden@web-01 true' >/dev/null 2>&1
 }
 
 for i in $(seq 1 "$runs"); do

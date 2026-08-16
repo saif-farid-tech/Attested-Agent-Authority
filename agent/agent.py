@@ -76,6 +76,9 @@ def load_config() -> dict:
         return json.loads(CONFIG.read_text())
     except FileNotFoundError:
         sys.exit(f"harden: no config at {CONFIG} (deployed by scripts/50-agent.sh)")
+    except PermissionError:
+        sys.exit(f"harden: cannot read {CONFIG} — it must be readable by the "
+                 "harden user; re-run scripts/50-agent.sh to fix its permissions")
 
 
 def ask_model(endpoint: str, applicable: list[str]) -> list[str]:
@@ -130,7 +133,13 @@ def ssh(host: str, command: str) -> subprocess.CompletedProcess:
          "-o", "IdentitiesOnly=yes",
          "-o", "BatchMode=yes",
          "-o", "ConnectTimeout=5",
-         "-o", "StrictHostKeyChecking=accept-new",
+         # Fleet hosts are ephemeral demo containers whose host keys change on
+         # rebuild; the security here is US proving identity to THEM with a
+         # CA-signed certificate, not verifying their host key. Keep the demo
+         # reproducible across rebuilds by not pinning their host keys.
+         "-o", "StrictHostKeyChecking=no",
+         "-o", "UserKnownHostsFile=/dev/null",
+         "-o", "LogLevel=ERROR",
          f"harden@{host}", command],
         capture_output=True, text=True, timeout=60,
     )

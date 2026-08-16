@@ -26,7 +26,8 @@ agent_touches_fleet() {  # can the agent still act on web-01, right now?
   vm_exec --user harden sh -c \
     'ssh -i ~/.ssh/id_ed25519 -o CertificateFile=/etc/ssh/harden-cert.pub \
          -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 \
-         -o StrictHostKeyChecking=accept-new harden@web-01 true' >/dev/null 2>&1
+         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+         -o LogLevel=ERROR harden@web-01 true' >/dev/null 2>&1
 }
 
 cert_seconds_left() {
@@ -139,7 +140,8 @@ narrate "ACT 4 — the cheap attacks all fail"
 beat "(1) a stolen KEY without a certificate:"
 if vm_exec --user harden sh -c \
     'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
-         -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+         -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+         -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
          harden@web-01 true' >/dev/null 2>&1; then
   warn "the fleet accepted a bare key — TrustedUserCAKeys setup is broken"
 else

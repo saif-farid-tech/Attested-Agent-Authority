@@ -86,3 +86,40 @@ tell a legitimate edit from a malicious one, and must not try. The workflow
 is: edit, redeploy (`scripts/50-agent.sh`), then `make rebaseline` to
 regenerate and re-sign the allowlist. If attestation fails right after you
 changed something, you are looking at bug #10, not a compromise.
+
+## 11. A rebuilt VM keeps its pinned address but changes its SSH host key
+
+Bug #7 pins the workload's address so it survives rebuilds. The side effect:
+the *same* IP hands back a *different* SSH host key each rebuild, so the
+verifier's own `~/.ssh/known_hosts` accumulates a stale entry and
+`StrictHostKeyChecking=accept-new` refuses the changed key with a scary
+`REMOTE HOST IDENTIFICATION HAS CHANGED!` banner — attestation fails at the
+SSH stage. The workload is an ephemeral VM on a local bridge; trust is
+anchored in the TPM/AK quote, not this transport. **Fix:** the verifier→
+workload and agent→fleet SSH channels use `StrictHostKeyChecking=no
+UserKnownHostsFile=/dev/null` so they never consult or pollute a known_hosts
+file. (`verifier/attest-once.py`, `agent/agent.py`, `scripts/90-demo.sh`,
+`scripts/measure-exposure.sh`)
+
+## 12. `lxc file push` gives the config mode 0600 root — the agent can't read it
+
+The agent runs as the unprivileged `harden` user, but `lxc file push`
+preserves the `mktemp` source mode (0600, owned root), so `config.json`
+lands unreadable and the agent dies with `PermissionError`. **Fix:** after
+pushing, `chown harden:harden` and `chmod 644` the config so the agent can
+read its own configuration. (`scripts/50-agent.sh`; `agent.py` also reports
+this cleanly now instead of crashing.)
+
+## 13. Reading the fresh quote files as root poisons the allowlist
+
+The quote artefacts (`q.msg`, `q.sig`) differ every cycle — a new nonce means
+a new quote. Under the broad `FILE_CHECK MAY_READ uid=0` policy, if root reads
+them off the normal filesystem the kernel *measures* them, so every single
+attestation adds a brand-new hash the allowlist can never match — attestation
+fails forever. **Fix:** write the throwaway quote files to `/dev/shm` (tmpfs),
+which is on the policy's `dont_measure` list, so reading them back has no
+measurement side effect. Relatedly, `70-baseline.sh` runs one warm-up
+attestation *before* freezing the allowlist, so the verifier's own one-time
+read footprint (the login session, sudo, tpm2 libraries) is captured rather
+than flagged on the first real run. (`verifier/attest-once.py`,
+`scripts/70-baseline.sh`)

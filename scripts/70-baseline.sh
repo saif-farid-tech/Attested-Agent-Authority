@@ -35,19 +35,39 @@ ok "agent exercised; its dependencies are now in the IMA measurement log"
 # ---- generate the allowlist (bug #5) ---------------------------------------
 # IMA writes 'sha256:<hash>'; tpm2-tools and our verifier compare bare
 # hashes. If the prefix is not stripped, NOTHING ever matches and every
-# measurement reads as a violation.
-vm_exec sh -c \
-  "awk '{split(\$4,h,\":\"); print h[2], \$5}' /sys/kernel/security/ima/ascii_runtime_measurements" \
-  | sort -u > "$AAA_STATE/allowlist.txt"
+# measurement reads as a violation. This helper regenerates it from the log.
+regen_allowlist() {
+  vm_exec sh -c \
+    "awk '{split(\$4,h,\":\"); print h[2], \$5}' /sys/kernel/security/ima/ascii_runtime_measurements" \
+    | sort -u > "$AAA_STATE/allowlist.txt"
+}
 
-entries=$(wc -l < "$AAA_STATE/allowlist.txt")
-[ "$entries" -gt 0 ] || die "allowlist is empty" \
+# A provisional allowlist so the warm-up attestation below can run at all
+# (its stage 1 refuses an empty allowlist).
+regen_allowlist
+[ -s "$AAA_STATE/allowlist.txt" ] || die "allowlist is empty" \
     "the IMA log produced no entries" \
     "lxc exec $AAA_VM -- head /sys/kernel/security/ima/ascii_runtime_measurements"
+
+# Warm-up: run one full attestation and DISCARD the result. Its only job is to
+# make the kernel measure the verifier's own read footprint — the attest login
+# session, sudo, tpm2_quote and their libraries — so those land in the log
+# before we freeze the allowlist. Without this, the first real attestation
+# reads a few files that were not yet measured and flags them as violations.
+log "warm-up attestation (captures the verifier's own footprint; result ignored)…"
+python3 verifier/attest-once.py >/dev/null 2>&1 || true
+
+# Now freeze the allowlist, footprint included.
+regen_allowlist
+entries=$(wc -l < "$AAA_STATE/allowlist.txt")
+[ "$entries" -gt 0 ] || die "allowlist is empty after warm-up" \
+    "unexpected — the IMA log emptied" \
+    "lxc exec $AAA_VM -- head /sys/kernel/security/ima/ascii_runtime_measurements"
 if [ "$entries" -gt 2000 ]; then
-  warn "$entries allowlist entries — that smells like ima_policy=tcb (bug #3); expect ~650–1100"
+  warn "$entries allowlist entries — larger than the reference (~650–1100), but "
+  warn "the broad FILE_CHECK policy explains it; attestation still works. See CORRECTIONS.md #3."
 fi
-ok "allowlist generated: $entries entries"
+ok "allowlist frozen: $entries entries"
 
 # ---- sign it ---------------------------------------------------------------
 gpg --yes --batch --armor --detach-sign \

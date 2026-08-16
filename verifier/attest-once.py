@@ -39,9 +39,15 @@ class StageFailure(Exception):
 
 
 def ssh(command: str, binary: bool = False) -> bytes | str:
+    # The workload is an ephemeral demo VM on a local bridge; the address is
+    # pinned but its SSH host key changes on every rebuild, so consulting the
+    # user's ~/.ssh/known_hosts only produces false "HOST KEY CHANGED" errors.
+    # Trust here is anchored in the TPM/AK quote, not this transport, so we
+    # keep known_hosts out of the loop entirely (and never touch the user's).
     r = subprocess.run(
         ["ssh", "-i", str(SSH_KEY), "-o", "BatchMode=yes",
-         "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new",
+         "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+         "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
          f"attest@{VM_ADDR}", command],
         capture_output=True, timeout=60)
     if r.returncode != 0:
@@ -101,10 +107,18 @@ def stage4_quote(report, workdir):
     # root to read them — packaging as the login user came back missing files.
     # base64 keeps the binary intact over ssh. Failures inside the && chain
     # propagate as the command's exit code, so ssh() reports them cleanly.
-    remote = ("sudo -n sh -c 'd=$(mktemp -d) && cd \"$d\" && "
+    # The quote artefacts are written to /dev/shm (tmpfs), NOT /tmp, for a
+    # subtle but critical reason: the IMA policy measures every file root
+    # reads, and these files have fresh content every cycle (new nonce → new
+    # quote). If root read them off the root filesystem they would be measured,
+    # producing a brand-new hash on every attestation that no allowlist could
+    # ever match. tmpfs is on the policy's dont_measure list, so reading them
+    # back as root is free of measurement side effects. Everything runs as
+    # root in one `sudo sh -c` so tar can read the root-owned artefacts.
+    remote = ("sudo -n sh -c 'd=$(mktemp -d -p /dev/shm) && cd \"$d\" && "
               f"tpm2_quote -c {AK_HANDLE} -l sha256:10 -q {nonce} "
               "-m q.msg -s q.sig -o q.pcrs -g sha256 >/dev/null && "
-              "tar -cf - q.msg q.sig q.pcrs | base64'")
+              "tar -cf - q.msg q.sig q.pcrs | base64; rc=$?; cd /; rm -rf \"$d\"; exit $rc'")
     blob = ssh(remote, binary=True)
 
     raw = base64.b64decode(blob) if blob.strip() else b""
