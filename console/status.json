@@ -1,0 +1,6 @@
+{
+ "attestation": "unknown",
+ "reason": "verifier not started yet — run 'make console'",
+ "cert_expires_at": 0.0,
+ "events": []
+}
