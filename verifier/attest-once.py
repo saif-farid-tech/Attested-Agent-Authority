@@ -96,17 +96,34 @@ def stage3_ima_log(report):
 
 def stage4_quote(report, workdir):
     nonce = secrets.token_hex(20)
-    # one round trip: quote in a remote tempdir, stream the artefacts back
-    blob = ssh(f"d=$(mktemp -d) && cd $d && sudo -n tpm2_quote -c {AK_HANDLE} "
-               f"-l sha256:10 -q {nonce} -m q.msg -s q.sig -o q.pcrs -g sha256 "
-               f">/dev/null && tar -cf - q.msg q.sig q.pcrs | base64", binary=True)
-    tar = workdir / "quote.tar"
-    tar.write_bytes(base64.b64decode(blob))
-    subprocess.run(["tar", "-xf", str(tar), "-C", str(workdir)], check=True)
-    for f in ("q.msg", "q.sig", "q.pcrs"):
-        if not (workdir / f).stat().st_size:
-            raise StageFailure(SETUP_FAIL, f"quote artefact {f} is empty",
-                               "scripts/30-tpm-keys.sh  # recreate the AK")
+    # One round trip, everything as root inside a single `sudo sh -c`:
+    # tpm2_quote writes the artefacts owned by root, so tar must ALSO run as
+    # root to read them — packaging as the login user came back missing files.
+    # base64 keeps the binary intact over ssh. Failures inside the && chain
+    # propagate as the command's exit code, so ssh() reports them cleanly.
+    remote = ("sudo -n sh -c 'd=$(mktemp -d) && cd \"$d\" && "
+              f"tpm2_quote -c {AK_HANDLE} -l sha256:10 -q {nonce} "
+              "-m q.msg -s q.sig -o q.pcrs -g sha256 >/dev/null && "
+              "tar -cf - q.msg q.sig q.pcrs | base64'")
+    blob = ssh(remote, binary=True)
+
+    raw = base64.b64decode(blob) if blob.strip() else b""
+    if not raw:
+        raise StageFailure(
+            SETUP_FAIL, "the workload returned an empty TPM quote",
+            "confirm the vTPM works: lxc exec harden -- tpm2_pcrread sha256:10 ; "
+            "then scripts/30-tpm-keys.sh to recreate the AK")
+    (workdir / "quote.tar").write_bytes(raw)
+    extract = subprocess.run(
+        ["tar", "-xf", str(workdir / "quote.tar"), "-C", str(workdir)],
+        capture_output=True, text=True)
+    missing = [f for f in ("q.msg", "q.sig", "q.pcrs")
+               if not (workdir / f).exists() or not (workdir / f).stat().st_size]
+    if extract.returncode != 0 or missing:
+        raise StageFailure(
+            SETUP_FAIL,
+            f"quote artefacts did not return intact (missing: {', '.join(missing) or 'archive unreadable'})",
+            "usually the vTPM or the AK: scripts/30-tpm-keys.sh to recreate the AK")
     return nonce, f"fresh quote over PCR 10, nonce {nonce[:16]}…"
 
 

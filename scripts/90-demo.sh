@@ -67,8 +67,31 @@ audit_fleet() {
   [ "$total" -eq 0 ]
 }
 
+# The demo drives itself end to end. If a verifier is already running (e.g.
+# you started 'make console' in another terminal for the UI), we use it;
+# otherwise we start our own in the background and stop it when the demo ends.
+# Either way you never have to juggle a second terminal.
+DEMO_VERIFIER_PID=""
+stop_demo_verifier() { [ -n "$DEMO_VERIFIER_PID" ] && kill "$DEMO_VERIFIER_PID" 2>/dev/null || true; }
+ensure_verifier() {
+  if pgrep -f "verifier/verifier.py" >/dev/null 2>&1; then
+    log "a verifier is already running — using it (start 'make console' for the UI)"
+    return
+  fi
+  log "no verifier running — starting one in the background for this demo"
+  python3 verifier/verifier.py >"$AAA_STATE/verifier-demo.log" 2>&1 &
+  DEMO_VERIFIER_PID=$!
+  trap stop_demo_verifier EXIT
+  sleep 2
+  kill -0 "$DEMO_VERIFIER_PID" 2>/dev/null || die "the verifier failed to start" \
+      "see $AAA_STATE/verifier-demo.log" \
+      "python3 verifier/verifier.py   # run it directly to see the error"
+  log "verifier started (pid $DEMO_VERIFIER_PID); UI available via 'make console' if wanted"
+}
+
 narrate "ACT 0 — set the stage (restore the measured state)"
 scripts/reset.sh
+ensure_verifier
 
 narrate "ACT 1 — plant real problems across the fleet"
 lxc exec web-01 -- sh -c 'mkdir -p /srv/app && echo "api_key=hunter2" > /srv/app/app.conf
@@ -90,8 +113,8 @@ for _ in $(seq 1 30); do
   sleep 5
 done
 [ -n "$funded" ] || die "no working certificate appeared after 150s" \
-    "verifier.py is probably not running" \
-    "python3 verifier/verifier.py &   # then re-run scripts/90-demo.sh"
+    "the verifier is running but never issued a cert — attestation is not passing" \
+    "make verify   # the six-stage diagnostic names the failing stage"
 beat "certificate valid for $(cert_seconds_left)s — the agent is FUNDED."
 
 narrate "ACT 3 — the agent earns its keep"
