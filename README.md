@@ -221,9 +221,13 @@ authority** — agent → kernel → TPM → verifier → CA → fleet — that 
 exactly which link breaks and which links keep honestly working, and a live
 event log that the demo narrates into. When authority hits zero the whole
 page visibly loses power. `make demo` runs the eight acts described above;
-run it again any time — it resets the stage first. (No demo running? The
-console plays a scripted version of the arc on its own, and the
-"Run scenario" button replays it — useful for rehearsing.)
+run it again any time — it resets the stage first.
+
+The console shows **only what the verifier actually reports** — it never
+simulates. With no verifier running it says `NO LIVE DATA` rather than
+performing an arc that didn't happen; if the verifier drops briefly it keeps
+showing the last real reading, marked stale. Every number on screen traces to
+a real attestation.
 
 **4. Clean up whenever you like:**
 

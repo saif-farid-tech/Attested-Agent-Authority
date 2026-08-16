@@ -38,16 +38,17 @@
            margin-bottom: 1.2rem; }
   header h1 { font-size: .95rem; font-weight: 500; color: var(--muted); }
   header h1 b { color: var(--text); font-weight: 500; }
-  #scenario { background: none; border: 1px solid var(--line); color: var(--muted);
-              font: inherit; font-size: .8rem; padding: .35rem .9rem;
-              border-radius: 4px; cursor: pointer; }
-  #scenario:hover { border-color: var(--ember); color: var(--text); }
+  #conn { font-size: .8rem; color: var(--muted); border: 1px solid var(--line);
+          padding: .3rem .8rem; border-radius: 4px; white-space: nowrap; }
+  #conn.live    { color: var(--ember);  border-color: var(--ember); }
+  #conn.offline { color: var(--muted); }
 
   /* -------- headline: the state, in words -------- */
   #headline { font-size: 2rem; font-weight: 700; letter-spacing: .02em;
               margin-bottom: .2rem; color: var(--ember); }
   #headline.draining { color: var(--amber); }
   #headline.dead-h   { color: var(--alarm); }
+  #headline.idle     { color: var(--muted); }
   #subline  { color: var(--muted); font-size: 1rem; margin-bottom: 1.3rem;
               max-width: 70ch; }
 
@@ -117,7 +118,7 @@
 <body>
 <header>
   <h1><b>attested-agent-authority</b> · verification console</h1>
-  <button id="scenario">Run scenario</button>
+  <span id="conn" class="mono">connecting…</span>
 </header>
 
 <div id="headline">AGENT FUNDED</div>
@@ -179,64 +180,95 @@ measured.</footer>
 
 <script>
 "use strict";
+// This console shows ONLY what the verifier actually reports. There is no
+// scripted or simulated mode: if there is no live status.json, it says so,
+// rather than performing a passing/failing arc that never happened.
 const CERT_TTL = 300;
 const $ = id => document.getElementById(id);
-let scenario = null;
-let lastGood = null;
+let lastGood = null;     // the most recent REAL reading from status.json
+let lastOkAt = 0;        // when we last fetched it (for the staleness notice)
 
 function fmt(s) {
   s = Math.max(0, Math.floor(s));
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 }
 function node(id, cls, text) {
-  const n = $("n-" + id);
-  n.className = "node" + (cls ? " " + cls : "");
+  $("n-" + id).className = "node" + (cls ? " " + cls : "");
   $("s-" + id).textContent = text;
 }
+function setChainIdle(text) {
+  for (const id of ["agent", "ima", "tpm", "ver", "ca", "fleet"]) node(id, "off", text);
+}
 
-function render(st) {
-  const now = st.__now ?? (Date.now() / 1000);
-  const left = (st.cert_expires_at || 0) - now;
-  const dead = left <= 0;
-  const failing = st.attestation === "fail";
-  const tampered = failing || (dead && st.attestation !== "pass");
+/* ---- honest "no live data" state — never a fabricated arc --------------- */
+function renderOffline(msg) {
+  $("headline").textContent = "NO LIVE DATA";
+  $("headline").className = "idle";
+  $("subline").textContent = msg;
+  $("fill").style.width = "0%";
+  $("fill").className = "";
+  $("countdown").textContent = "—";
+  document.body.classList.remove("dead");
+  setChainIdle("awaiting verifier");
+  $("events").innerHTML = "";
+  $("conn").textContent = "● offline";
+  $("conn").className = "offline";
+}
 
-  // headline — the state, in words a first-time viewer can follow
+/* ---- render a REAL status.json reading; stale=true if the fetch is failing
+        but we are still showing the last real numbers ---------------------- */
+function render(st, stale) {
+  const now = Date.now() / 1000;
+  const att = st.attestation;
+  const hasCert = (st.cert_expires_at || 0) > 0;
+  const left = hasCert ? st.cert_expires_at - now : 0;
+  const dead = hasCert && left <= 0;
+  const funded = att === "pass" && left > 0;
+  const draining = att === "fail" && left > 0;
+  const tampered = draining || (dead && att === "fail");
+
+  const staleNote = stale
+    ? `⚠ verifier unreachable — showing the last reading (${fmt(now - lastOkAt)} ago).  `
+    : "";
   const h = $("headline"), sub = $("subline");
+
   if (dead) {
-    h.textContent = "NO AUTHORITY";
-    h.className = "dead-h";
-    sub.textContent = "The certificate has expired and the verifier will not " +
-      "sign another. The agent still has root on its own VM — and can no " +
-      "longer touch anything beyond it.";
-  } else if (failing) {
-    h.textContent = "TAMPER DETECTED — AUTHORITY DRAINING";
-    h.className = "draining";
-    sub.textContent = st.reason + "  Nothing was blocked and nothing will " +
-      "be: the agent keeps its powers until this certificate runs out, and " +
-      "then it has none.";
+    h.textContent = "NO AUTHORITY"; h.className = "dead-h";
+    sub.textContent = staleNote + "The certificate has expired and the verifier "
+      + "will not sign another. The agent still has root on its own VM — and can "
+      + "no longer touch anything beyond it.";
+  } else if (draining) {
+    h.textContent = "TAMPER DETECTED — AUTHORITY DRAINING"; h.className = "draining";
+    sub.textContent = staleNote + (st.reason || "") + "  Nothing was blocked and "
+      + "nothing will be: the agent keeps its powers until this certificate runs "
+      + "out, and then it has none.";
+  } else if (funded) {
+    h.textContent = "AGENT FUNDED"; h.className = "";
+    sub.textContent = staleNote + (st.reason || "") + "  The verifier re-checks "
+      + "the workload every 30 seconds and pays out authority 5 minutes at a time.";
   } else {
-    h.textContent = "AGENT FUNDED";
-    h.className = "";
-    sub.textContent = (st.reason || "") + "  The verifier re-checks the " +
-      "workload every 30 seconds and pays out authority 5 minutes at a time.";
+    // verifier is up but has no certificate yet (starting, or a setup error)
+    h.textContent = att === "error" ? "VERIFIER PROBLEM" : "AWAITING ATTESTATION";
+    h.className = "idle";
+    sub.textContent = staleNote + (st.reason || "The verifier is online and has "
+      + "not completed a first attestation cycle yet.");
   }
 
   // filament
   $("fill").style.width = (Math.max(0, Math.min(1, left / CERT_TTL)) * 100) + "%";
-  $("fill").className = dead ? "dead-fill" : failing ? "draining-fill" : "";
-  $("countdown").textContent = dead ? "0:00" : fmt(left);
+  $("fill").className = dead ? "dead-fill" : draining ? "draining-fill" : "";
+  $("countdown").textContent = hasCert ? (dead ? "0:00" : fmt(left)) : "—";
   document.body.classList.toggle("dead", dead);
 
   // chain of authority — which link is broken?
-  if (!tampered) {
+  if (funded) {
     node("agent", "", "working the fleet");
     node("ima",   "", "hashing all it runs & reads");
     node("tpm",   "", "quoting PCR 10 honestly");
     node("ver",   "", "signature ✓ replay ✓ allowlist ✓");
     node("ca",    "", "issuing on every pass");
     node("fleet", "", "obeys a valid certificate");
-  } else {
+  } else if (tampered) {
     node("agent", "bad", dead ? "powerless (still has root)" : "modified its own profile");
     node("ima",   "doomed", "change logged — log is append-only");
     node("tpm",   "", "quoting honestly — reports the change");
@@ -246,81 +278,36 @@ function render(st) {
          dead ? "refuses — certificate expired"
               : "still obeys — cert valid " + fmt(left));
     if (!dead) $("n-fleet").querySelector(".dot").classList.add("pulse");
+  } else {
+    setChainIdle(att === "error" ? "verifier setup error" : "awaiting first attestation");
   }
 
-  // event log, newest first
+  // event log, newest first — straight from the verifier
   $("events").innerHTML = (st.events || []).slice(0, 24).map(e => {
     const ts = e.ts ? new Date(e.ts * 1000).toTimeString().slice(0, 8) : "--:--:--";
     return `<li><span class="ts">${ts}</span>` +
            `<span class="kind ${e.kind}">${e.kind}</span><span>${e.text}</span></li>`;
   }).join("");
+
+  $("conn").textContent = stale ? "● stale" : "● live";
+  $("conn").className = stale ? "offline" : "live";
 }
 
-/* ---- scripted arc: offline fallback and the "Run scenario" button ------- */
-function buildScenario() {
-  const ev = [];
-  const push = (kind, text) => ev.unshift({ ts: Date.now() / 1000, kind, text });
-  let expiry = Date.now() / 1000 + CERT_TTL;
-  const start = Date.now() / 1000;
-  let simNow = start;
-  const now = () => simNow;
-  push("pass", "Quote verified · 655 measurements recognised");
-  push("issue", "Certificate issued, valid 5 min");
-  const frames = [
-    [0,  s => { s.attestation = "pass";
-                s.reason = "Measurements match the signed allowlist."; }],
-    [5,  s => { push("act",  "agent: web-01 world-writable config fixed · stale /tmp cleared"); }],
-    [9,  s => { push("pass", "Quote verified · 655 measurements recognised");
-                push("issue","Certificate re-issued, valid 5 min");
-                expiry = now() + CERT_TTL; }],
-    [13, s => { push("act",  "intruder test: bare key without certificate → fleet refuses"); }],
-    [16, s => { push("act",  "intruder test: edit the IMA log → read-only, kernel-held"); }],
-    [20, s => { push("act",  "agent writes to /etc/apparmor.d/harden — the write SUCCEEDS"); }],
-    [24, s => { push("act",  "agent still working: web-01 obeys — nothing noticed… yet"); }],
-    [28, s => { s.attestation = "fail";
-                s.reason = "1 measurement not on the signed allowlist: /etc/apparmor.d/harden.";
-                push("fail", "Attestation failed — signing stops, certificate left to drain");
-                s.__accel = 9; }],
-    [38, s => { push("act",  "agent still working: cert honoured — the doom is silent"); }],
-    [56, s => { simNow = Math.max(simNow, expiry + 1);   // the fuse reaches zero
-                push("expire","Certificate expired — the agent now has NO AUTHORITY");
-                s.__accel = 1; }],
-    [62, s => { push("act",  "agent restores the original profile bytes — repentance"); }],
-    [66, s => { push("fail", "Attestation STILL fails: the log is append-only; the past is measured");
-                s.reason = "The tamper is in the measurement history. Only a rebuild " +
-                           "to measured state restores trust."; }],
-  ];
-  return {
-    done: false,
-    state: { attestation: "pass", reason: "", events: ev, __accel: 1 },
-    tick() {
-      if (this.done) { render(this.state); return; }
-      const wall = Date.now() / 1000 - start;
-      simNow += 1 * this.state.__accel;
-      while (frames.length && wall >= frames[0][0]) frames.shift()[1](this.state);
-      this.state.cert_expires_at = expiry;
-      this.state.__now = simNow;
-      render(this.state);
-      if (wall > 72) this.done = true;   // hold the final frame
-    },
-  };
-}
-
-$("scenario").addEventListener("click", () => { scenario = buildScenario(); });
-
-/* ---- main loop: poll status.json; scripted arc when unreachable --------- */
+/* ---- main loop: poll status.json, and only status.json ------------------ */
 async function poll() {
-  if (scenario && !scenario.done) { scenario.tick(); return; }
   try {
     const r = await fetch("status.json", { cache: "no-store" });
     if (!r.ok) throw new Error(r.status);
     lastGood = await r.json();
-    scenario = null;                         // real data wins over a finished arc
-    render(lastGood);
+    lastOkAt = Date.now() / 1000;
+    render(lastGood, false);
   } catch {
-    if (scenario) scenario.tick();           // finished arc: keep the last frame
-    else if (lastGood) render(lastGood);     // verifier briefly away: hold state
-    else { scenario = buildScenario(); scenario.tick(); }   // unreachable: demo
+    // No fabrication. If we ever had real data, keep showing it (the numbers
+    // are real, only the connection is stale); otherwise say there is none.
+    if (lastGood && (Date.now() / 1000 - lastOkAt) < 120) render(lastGood, true);
+    else renderOffline("No verifier is publishing status.json. Start it with "
+      + "'make console' after 'make build'. This console never simulates — it "
+      + "shows only what the verifier actually reports.");
   }
 }
 setInterval(poll, 1000);
