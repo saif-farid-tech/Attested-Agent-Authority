@@ -43,6 +43,37 @@
   #conn.live    { color: var(--ember);  border-color: var(--ember); }
   #conn.offline { color: var(--muted); }
 
+  /* -------- agent hero: the autonomous actor, foregrounded -------- */
+  #agent-hero { border: 1px solid var(--line); border-radius: 10px;
+                background: linear-gradient(180deg, var(--panel), var(--ink));
+                padding: 1.1rem 1.3rem; margin-bottom: 1.4rem; }
+  #agent-id { display: flex; align-items: center; gap: .9rem; }
+  #agent-avatar { width: 42px; height: 42px; border-radius: 10px; flex: none;
+                  display: grid; place-items: center; font-size: 1.3rem;
+                  color: var(--ink); background: var(--ember);
+                  box-shadow: 0 0 18px rgba(233,84,32,.5); }
+  #agent-hero.draining #agent-avatar { background: var(--amber); box-shadow: 0 0 14px rgba(232,163,61,.45); }
+  #agent-hero.dead-hero #agent-avatar { background: var(--alarm); box-shadow: none; }
+  #agent-name { font-size: 1.35rem; font-weight: 700; letter-spacing: .08em; }
+  #agent-role { font-size: .8rem; color: var(--muted); max-width: 60ch; }
+  #agent-pill { margin-left: auto; font-size: .8rem; font-weight: 700;
+                letter-spacing: .08em; padding: .35rem .85rem; border-radius: 100px;
+                border: 1px solid var(--ember); color: var(--ember);
+                white-space: nowrap; }
+  #agent-hero.draining #agent-pill { border-color: var(--amber); color: var(--amber); }
+  #agent-hero.dead-hero #agent-pill { border-color: var(--alarm); color: var(--alarm); }
+  #agent-now { display: flex; align-items: baseline; gap: .7rem; margin-top: 1rem;
+               padding-top: .8rem; border-top: 1px solid var(--line); }
+  #agent-now .lbl { font-size: .68rem; letter-spacing: .16em; color: var(--muted);
+                    flex: none; }
+  #agent-action { font-family: 'Ubuntu Mono', ui-monospace, monospace;
+                  font-size: .95rem; color: var(--text); }
+  #agent-trail { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .7rem; }
+  #agent-trail .step { font-family: 'Ubuntu Mono', ui-monospace, monospace;
+                       font-size: .72rem; color: var(--muted);
+                       border: 1px solid var(--line); border-radius: 4px;
+                       padding: .18rem .5rem; }
+
   /* -------- headline: the state, in words -------- */
   #headline { font-size: 2rem; font-weight: 700; letter-spacing: .02em;
               margin-bottom: .2rem; color: var(--ember); }
@@ -117,9 +148,28 @@
 </head>
 <body>
 <header>
-  <h1><b>attested-agent-authority</b> · verification console</h1>
+  <h1><b>attested-agent-authority</b> · agent control console</h1>
   <span id="conn" class="mono">connecting…</span>
 </header>
+
+<!-- The autonomous agent, front and centre: who it is, what it's doing now,
+     and whether it still has the authority to do it. -->
+<section id="agent-hero">
+  <div id="agent-id">
+    <div id="agent-avatar">◆</div>
+    <div>
+      <div id="agent-name">HARDEN</div>
+      <div id="agent-role">autonomous security-remediation agent · plans with a
+        local llama.cpp model · has root on its own VM</div>
+    </div>
+    <span id="agent-pill">FUNDED</span>
+  </div>
+  <div id="agent-now">
+    <span class="lbl">NOW</span>
+    <span id="agent-action">waiting for the verifier…</span>
+  </div>
+  <div id="agent-trail"></div>
+</section>
 
 <div id="headline">AGENT FUNDED</div>
 <div id="subline">waiting for the verifier…</div>
@@ -211,8 +261,31 @@ function renderOffline(msg) {
   document.body.classList.remove("dead");
   setChainIdle("awaiting verifier");
   $("events").innerHTML = "";
+  $("agent-hero").className = "";
+  $("agent-pill").textContent = "OFFLINE";
+  $("agent-action").textContent = "no verifier connected — the agent is not being funded";
+  $("agent-trail").innerHTML = "";
   $("conn").textContent = "● offline";
   $("conn").className = "offline";
+}
+
+// The agent hero, driven by the same real events. "act" events are the
+// agent's own decisions and actions (survey, plan, remediate, tamper).
+function renderAgent(st, mode, left) {
+  const acts = (st.events || []).filter(e => e.kind === "act");
+  const hero = $("agent-hero");
+  hero.className = mode === "dead" ? "dead-hero" : mode === "draining" ? "draining" : "";
+  $("agent-pill").textContent =
+    mode === "dead" ? "NO AUTHORITY" : mode === "draining" ? "DRAINING"
+    : mode === "funded" ? "FUNDED · WORKING" : "STANDING BY";
+  $("agent-action").textContent =
+    mode === "dead" ? "certificate expired — can no longer act on the fleet (still has root on itself)"
+    : acts.length ? acts[0].text
+    : mode === "funded" ? "funded — surveying the fleet and applying fixes"
+    : "waiting for the verifier to issue a certificate";
+  $("agent-trail").innerHTML = acts.slice(0, 4)
+    .map(e => `<span class="step">${e.text.length > 46 ? e.text.slice(0, 45) + "…" : e.text}</span>`)
+    .join("");
 }
 
 /* ---- render a REAL status.json reading; stale=true if the fetch is failing
@@ -288,6 +361,8 @@ function render(st, stale) {
     return `<li><span class="ts">${ts}</span>` +
            `<span class="kind ${e.kind}">${e.kind}</span><span>${e.text}</span></li>`;
   }).join("");
+
+  renderAgent(st, dead ? "dead" : draining ? "draining" : funded ? "funded" : "idle", left);
 
   $("conn").textContent = stale ? "● stale" : "● live";
   $("conn").className = stale ? "offline" : "live";

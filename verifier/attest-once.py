@@ -18,10 +18,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 STATE = Path(os.environ.get("AAA_STATE", Path.home() / "attested-agent"))
-VM_ADDR = os.environ.get("AAA_VM_ADDR", "10.147.0.10")
+VM_NAME = os.environ.get("AAA_VM", "harden")
+VM_ADDR_PIN = os.environ.get("AAA_VM_ADDR", "10.147.0.10")
 SSH_KEY = STATE / "workload_ed25519"
 AK_PUB = STATE / "ak.pub"
 ALLOWLIST = STATE / "allowlist.txt"
@@ -38,24 +40,56 @@ class StageFailure(Exception):
         self.code, self.what, self.remedy = code, what, remedy
 
 
+_vm_addr = None
+
+def vm_addr(refresh: bool = False) -> str:
+    """The workload's CURRENT IPv4, asked of LXD — not the pinned constant.
+    A rebuilt or just-rebooted VM often comes up on a different address (the
+    pin can take a second restart to apply), and assuming the pin turns into
+    'connection timed out' / 'no route to host' every cycle. Ask LXD; fall
+    back to the pin only if the query yields nothing."""
+    global _vm_addr
+    if _vm_addr and not refresh:
+        return _vm_addr
+    try:
+        out = subprocess.run(["lxc", "list", VM_NAME, "-c", "4", "-f", "csv"],
+                             capture_output=True, text=True, timeout=10).stdout
+        for line in out.splitlines():
+            tok = line.split()
+            if tok and tok[0][:1].isdigit():   # first IPv4 on the line
+                _vm_addr = tok[0].strip()
+                return _vm_addr
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _vm_addr = VM_ADDR_PIN
+    return _vm_addr
+
+
 def ssh(command: str, binary: bool = False) -> bytes | str:
-    # The workload is an ephemeral demo VM on a local bridge; the address is
-    # pinned but its SSH host key changes on every rebuild, so consulting the
-    # user's ~/.ssh/known_hosts only produces false "HOST KEY CHANGED" errors.
-    # Trust here is anchored in the TPM/AK quote, not this transport, so we
-    # keep known_hosts out of the loop entirely (and never touch the user's).
-    r = subprocess.run(
-        ["ssh", "-i", str(SSH_KEY), "-o", "BatchMode=yes",
-         "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
-         "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-         f"attest@{VM_ADDR}", command],
-        capture_output=True, timeout=60)
-    if r.returncode != 0:
-        raise StageFailure(
-            SETUP_FAIL,
-            f"ssh to attest@{VM_ADDR} failed: {r.stderr.decode().strip() or 'no output'}",
-            "scripts/20-workload.sh  # re-establishes the attest user and key")
-    return r.stdout if binary else r.stdout.decode()
+    # known_hosts is bypassed on purpose: the workload is an ephemeral demo VM
+    # whose SSH host key changes on every rebuild, so consulting the user's
+    # ~/.ssh/known_hosts only produces false "HOST KEY CHANGED" errors. Trust
+    # is anchored in the TPM/AK quote, not this transport.
+    #
+    # Two attempts: if the first fails on a network error, re-resolve the VM's
+    # address (it may have moved) and try once more before giving up.
+    last = None
+    for attempt in range(2):
+        addr = vm_addr(refresh=(attempt > 0))
+        last = subprocess.run(
+            ["ssh", "-i", str(SSH_KEY), "-o", "BatchMode=yes",
+             "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+             "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+             f"attest@{addr}", command],
+            capture_output=True, timeout=60)
+        if last.returncode == 0:
+            return last.stdout if binary else last.stdout.decode()
+    err = last.stderr.decode().strip() or "no output"
+    hint = ("the VM is unreachable — check it is up and on the expected address: "
+            f"lxc list {VM_NAME}  (start it with: lxc start {VM_NAME})"
+            if "timed out" in err or "route to host" in err or "refused" in err
+            else "scripts/20-workload.sh  # re-establishes the attest user and key")
+    raise StageFailure(SETUP_FAIL, f"ssh to attest@{vm_addr()} failed: {err}", hint)
 
 
 # ---- stages ----------------------------------------------------------------
@@ -87,7 +121,7 @@ def stage2_ssh(report):
     if "SUDO_OK" not in r:
         raise StageFailure(SETUP_FAIL, "passwordless sudo not working for attest",
                            "scripts/20-workload.sh  # reinstalls /etc/sudoers.d/attest")
-    return f"key auth and passwordless sudo confirmed on {VM_ADDR}"
+    return f"key auth and passwordless sudo confirmed on {vm_addr()}"
 
 
 def stage3_ima_log(report):
@@ -101,44 +135,54 @@ def stage3_ima_log(report):
 
 
 def stage4_quote(report, workdir):
-    nonce = secrets.token_hex(20)
-    # One round trip, everything as root inside a single `sudo sh -c`:
-    # tpm2_quote writes the artefacts owned by root, so tar must ALSO run as
-    # root to read them — packaging as the login user came back missing files.
-    # base64 keeps the binary intact over ssh. Failures inside the && chain
-    # propagate as the command's exit code, so ssh() reports them cleanly.
-    # The quote artefacts are written to /dev/shm (tmpfs), NOT /tmp, for a
-    # subtle but critical reason: the IMA policy measures every file root
-    # reads, and these files have fresh content every cycle (new nonce → new
-    # quote). If root read them off the root filesystem they would be measured,
-    # producing a brand-new hash on every attestation that no allowlist could
-    # ever match. tmpfs is on the policy's dont_measure list, so reading them
-    # back as root is free of measurement side effects. Everything runs as
-    # root in one `sudo sh -c` so tar can read the root-owned artefacts.
-    remote = ("sudo -n sh -c 'd=$(mktemp -d -p /dev/shm) && cd \"$d\" && "
-              f"tpm2_quote -c {AK_HANDLE} -l sha256:10 -q {nonce} "
-              "-m q.msg -s q.sig -o q.pcrs -g sha256 >/dev/null && "
-              "tar -cf - q.msg q.sig q.pcrs | base64; rc=$?; cd /; rm -rf \"$d\"; exit $rc'")
-    blob = ssh(remote, binary=True)
+    # PCR 10 (the IMA PCR) keeps growing as the kernel measures files, and
+    # tpm2_quote occasionally loses a race with that ("PCR values failed to
+    # match quote's digest"). It is transient — retry a few times with a fresh
+    # nonce and a short pause for the measurement activity to settle.
+    #
+    # The quote artefacts are written to /dev/shm (tmpfs), NOT /tmp, and read
+    # back as root in one `sudo sh -c`: these files have fresh content every
+    # cycle, and the IMA policy measures every file root reads off a real
+    # filesystem — which would put a brand-new hash on the log each attestation
+    # that no allowlist could match. tmpfs is on the policy's dont_measure
+    # list, so reading them there has no measurement side effect. Running the
+    # whole chain as root lets tar read the root-owned artefacts.
+    last = None
+    for attempt in range(4):
+        nonce = secrets.token_hex(20)
+        remote = ("sudo -n sh -c 'd=$(mktemp -d -p /dev/shm) && cd \"$d\" && "
+                  f"tpm2_quote -c {AK_HANDLE} -l sha256:10 -q {nonce} "
+                  "-m q.msg -s q.sig -o q.pcrs -g sha256 >/dev/null && "
+                  "tar -cf - q.msg q.sig q.pcrs | base64; rc=$?; cd /; rm -rf \"$d\"; exit $rc'")
+        try:
+            blob = ssh(remote, binary=True)
+        except StageFailure as e:
+            last = e; time.sleep(1); continue
 
-    raw = base64.b64decode(blob) if blob.strip() else b""
-    if not raw:
-        raise StageFailure(
-            SETUP_FAIL, "the workload returned an empty TPM quote",
-            "confirm the vTPM works: lxc exec harden -- tpm2_pcrread sha256:10 ; "
-            "then scripts/30-tpm-keys.sh to recreate the AK")
-    (workdir / "quote.tar").write_bytes(raw)
-    extract = subprocess.run(
-        ["tar", "-xf", str(workdir / "quote.tar"), "-C", str(workdir)],
-        capture_output=True, text=True)
-    missing = [f for f in ("q.msg", "q.sig", "q.pcrs")
-               if not (workdir / f).exists() or not (workdir / f).stat().st_size]
-    if extract.returncode != 0 or missing:
-        raise StageFailure(
-            SETUP_FAIL,
-            f"quote artefacts did not return intact (missing: {', '.join(missing) or 'archive unreadable'})",
-            "usually the vTPM or the AK: scripts/30-tpm-keys.sh to recreate the AK")
-    return nonce, f"fresh quote over PCR 10, nonce {nonce[:16]}…"
+        raw = base64.b64decode(blob) if blob.strip() else b""
+        if not raw:
+            last = StageFailure(
+                SETUP_FAIL, "the workload returned an empty TPM quote",
+                "confirm the vTPM works: lxc exec harden -- tpm2_pcrread sha256:10 ; "
+                "then scripts/30-tpm-keys.sh to recreate the AK")
+            time.sleep(1); continue
+        for stale in ("q.msg", "q.sig", "q.pcrs"):
+            (workdir / stale).unlink(missing_ok=True)
+        (workdir / "quote.tar").write_bytes(raw)
+        extract = subprocess.run(
+            ["tar", "-xf", str(workdir / "quote.tar"), "-C", str(workdir)],
+            capture_output=True, text=True)
+        missing = [f for f in ("q.msg", "q.sig", "q.pcrs")
+                   if not (workdir / f).exists() or not (workdir / f).stat().st_size]
+        if extract.returncode != 0 or missing:
+            last = StageFailure(
+                SETUP_FAIL,
+                f"quote artefacts did not return intact (missing: {', '.join(missing) or 'archive unreadable'})",
+                "usually the vTPM or the AK: scripts/30-tpm-keys.sh to recreate the AK")
+            time.sleep(1); continue
+        note = "" if attempt == 0 else f" (after {attempt + 1} tries)"
+        return nonce, f"fresh quote over PCR 10, nonce {nonce[:16]}…{note}"
+    raise last
 
 
 def stage5_checkquote(report, workdir, nonce):

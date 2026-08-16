@@ -241,6 +241,7 @@ make teardown       # removes everything the project created, and only that
 |---|---|
 | `make preflight` | check the machine; change nothing |
 | `make build` | full build from scratch (~20 min), ends at a passing check + snapshot |
+| `make doctor` | one-shot health check of the whole chain — **run this when stuck** |
 | `make verify` | run the six-stage health check (see below) |
 | `make demo` | the demonstration, restartable in ~30 s — made for filming |
 | `make rebaseline` | re-measure and re-sign the allowlist (needed after you edit the agent — [CORRECTIONS.md](CORRECTIONS.md) #10) |
@@ -251,7 +252,14 @@ make teardown       # removes everything the project created, and only that
 
 ## When something breaks
 
-Run `make verify`. It checks six things in order — verifier files, the
+**Run `make doctor` first.** It checks the whole chain in one pass — VM up and
+reachable at its *actual* address, vTPM, IMA log, AppArmor profile, agent
+files readable, verifier state, fleet CA trust, and a full end-to-end
+attestation — and prints one report with a ✓/✗ per item and the exact command
+that fixes each ✗. It changes nothing, so it is always safe. When you are
+stuck, paste its output.
+
+For the attestation path specifically, `make verify` It checks six things in order — verifier files, the
 connection to the VM, the measurement log, the TPM quote, the quote's
 signature, and the allowlist comparison — stops at the first failure, and
 prints the exact command that fixes it. Its final result is honest about

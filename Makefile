@@ -5,13 +5,14 @@
 SHELL := /bin/bash
 CONSOLE_PORT ?= 9000
 
-.PHONY: help preflight build verify demo rebaseline console measure reset teardown
+.PHONY: help preflight build verify demo rebaseline console measure reset teardown doctor
 
 help:
 	@echo "attested-agent-authority"
 	@echo
 	@echo "  make preflight    environment checks only (changes nothing)"
 	@echo "  make build        full build from scratch (~20 min), ends at a passing verify"
+	@echo "  make doctor       one-shot health check of the whole chain (run this when stuck)"
 	@echo "  make verify       run the six-stage attestation diagnostic"
 	@echo "  make demo         instant replay from snapshot (~30 s) — for filming"
 	@echo "  make rebaseline   regenerate + re-sign the allowlist (after editing the agent)"
@@ -34,6 +35,9 @@ build: preflight
 	@echo
 	@echo "build complete — snapshot 'demo-ready' taken."
 	@echo "next: 'make console' in one terminal, 'make demo' in another."
+
+doctor:
+	scripts/doctor.sh
 
 verify:
 	scripts/80-verify.sh
