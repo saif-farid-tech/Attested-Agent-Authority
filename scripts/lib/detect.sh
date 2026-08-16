@@ -13,7 +13,7 @@ detect_host_tpm() {   # exits 0 if a real TPM char device is present
 }
 
 detect_lxd_ext() {    # detect_lxd_ext EXTENSION — is an LXD API extension present?
-  lxc query /1.0 2>/dev/null | grep -q "\"$1\""
+  lxc_says "\"$1\"" query /1.0
 }
 
 detect_free_ram_mb() { awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo; }
@@ -50,5 +50,6 @@ detect_vm_tpm() {     # vTPM visible inside the VM?
 }
 
 detect_fleet_addr() { # detect_fleet_addr NAME — IPv4 of a fleet container
-  lxc list "$1" -c 4 -f csv | awk '{print $1; exit}'
+  # NR==1 (not 'print;exit') so awk reads to EOF and never SIGPIPEs lxc
+  lxc list "$1" -c 4 -f csv | awk 'NR==1{print $1}'
 }

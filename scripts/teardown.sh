@@ -67,10 +67,14 @@ if command -v lxc >/dev/null 2>&1; then
   leftovers=$(lxc list -f csv -c n 2>/dev/null | grep -Ex "$AAA_VM|web-01|db-01|gw-01" || true)
   [ -z "$leftovers" ] || die "instances still present after teardown: $leftovers" \
       "lxc delete failed silently" "lxc delete --force $leftovers"
-  if lxc network list -f csv 2>/dev/null | cut -d, -f1 | grep -qx "$AAA_NET"; then
-    die "network $AAA_NET still present" "network delete failed" \
-        "lxc network delete $AAA_NET"
-  fi
+  # capture-then-match (no pipe into grep -q): pipefail + early pipe close
+  # would otherwise misreport this check — see lxc_says in lib/common.sh
+  net_present=0
+  while IFS= read -r n; do
+    [ "$n" = "$AAA_NET" ] && net_present=1
+  done < <(lxc network list -f csv 2>/dev/null | cut -d, -f1)
+  [ "$net_present" -eq 0 ] || die "network $AAA_NET still present" \
+      "network delete failed" "lxc network delete $AAA_NET"
 fi
 [ ! -e /var/lib/harden ] && [ ! -e "$HOME/attested-agent" ] || \
   die "host directories still present" "rm failed" \

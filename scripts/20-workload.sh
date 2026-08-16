@@ -39,8 +39,9 @@ fi
 # ---- pin the address (bug #7: DHCP reassigns on every rebuild) -------------
 # The NIC's LXD device name is discovered, not assumed — and note the guest
 # will still name the interface something like enp5s0, never eth0.
+# !found (not 'print;exit') so awk reads to EOF and never SIGPIPEs lxc
 nicdev=$(lxc config show "$AAA_VM" --expanded | \
-         awk '/^  [a-z0-9]+:$/{d=$1} /type: nic/{gsub(":","",d); print d; exit}')
+         awk '/^  [a-z0-9]+:$/{d=$1} /type: nic/ && !found {gsub(":","",d); print d; found=1}')
 [ -n "$nicdev" ] || die "could not find the VM's NIC device" \
     "the instance has no nic in its expanded config" \
     "lxc config show $AAA_VM --expanded  # then re-run"
@@ -52,7 +53,7 @@ else
   ok "pinned $AAA_VM to $AAA_VM_ADDR on device $nicdev"
 fi
 
-lxc info "$AAA_VM" | grep -q RUNNING || { lxc start "$AAA_VM"; log "starting VM…"; }
+lxc_says RUNNING info "$AAA_VM" || { lxc start "$AAA_VM"; log "starting VM…"; }
 wait_vm_ready
 
 # ---- quality of life: apport off (bug #9) ---------------------------------

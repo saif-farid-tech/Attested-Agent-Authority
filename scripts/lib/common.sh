@@ -95,6 +95,18 @@ vm_push() { lxc file push --create-dirs "$1" "$AAA_VM$2"; }
 
 instance_exists() { lxc info "$1" >/dev/null 2>&1; }
 
+# lxc_says PATTERN CMD... — true if the stdout of an lxc command contains the
+# literal substring PATTERN. Capture-then-match; NEVER `lxc … | grep -q …`.
+# Under `set -o pipefail`, grep -q closes the pipe on its first match and
+# SIGPIPEs the still-streaming lxc process, so the pipeline reports failure
+# even though the match SUCCEEDED. That false failure was a real bug: the CA
+# trust was correctly configured, yet the verify step "failed" every time.
+lxc_says() {
+  local pat=$1; shift
+  local out; out=$(lxc "$@" 2>/dev/null) || true
+  [[ $out == *"$pat"* ]]
+}
+
 wait_vm_ready() {  # wait for the LXD agent inside the VM to answer
   local tries=${1:-60}
   for _ in $(seq 1 "$tries"); do

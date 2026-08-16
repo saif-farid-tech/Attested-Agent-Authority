@@ -60,7 +60,7 @@ done
 
 # ---- verify outcome --------------------------------------------------------
 for host in "${AAA_FLEET[@]}"; do
-  lxc exec "$host" -- sshd -T 2>/dev/null | grep -qi "trustedusercakeys /etc/ssh/attested_ca.pub" || \
+  lxc_says "trustedusercakeys /etc/ssh/attested_ca.pub" exec "$host" -- sshd -T || \
     die "$host: sshd is not trusting the CA" \
         "TrustedUserCAKeys did not take effect" \
         "lxc exec $host -- sshd -T | grep -i trusted  # inspect, then re-run"

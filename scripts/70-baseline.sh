@@ -71,7 +71,7 @@ lxc snapshot "$AAA_VM" "$AAA_SNAPSHOT" --reuse 2>/dev/null || {
   lxc delete "$AAA_VM/$AAA_SNAPSHOT" 2>/dev/null || true
   lxc snapshot "$AAA_VM" "$AAA_SNAPSHOT"
 }
-lxc info "$AAA_VM" | grep -q "$AAA_SNAPSHOT" || \
+lxc_says "$AAA_SNAPSHOT" info "$AAA_VM" || \
   die "snapshot $AAA_SNAPSHOT missing" "lxc snapshot failed" \
       "lxc snapshot $AAA_VM $AAA_SNAPSHOT"
 ok "snapshot '$AAA_SNAPSHOT' taken — 'make demo' can now replay in ~30 s"
