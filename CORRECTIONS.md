@@ -123,3 +123,17 @@ attestation *before* freezing the allowlist, so the verifier's own one-time
 read footprint (the login session, sudo, tpm2 libraries) is captured rather
 than flagged on the first real run. (`verifier/attest-once.py`,
 `scripts/70-baseline.sh`)
+
+## 14. Restoring a snapshot without a reboot doesn't undo the tamper
+
+The tamper's real effect is in the kernel's **runtime** IMA measurement log,
+not the profile file on disk. `lxc restore` on a *running* VM rolls back the
+disk but leaves that log live in the running kernel, so attestation keeps
+failing and the demo won't restart — which tempts you toward `make rebaseline`
+(exactly the wrong move: it re-freezes the allowlist around the current,
+possibly-tampered state and corrupts the clean baseline). **Fix:** `reset.sh`
+now stops the VM, restores, and cold-boots it, so the measurement log is
+regenerated — and it verifies the profile came back pristine before declaring
+success. Relatedly, `70-baseline.sh` strips any leftover tamper line before
+baselining, so an interrupted demo can never poison a future snapshot. To
+restart a demo, use `make demo` (or `make reset`) — never `make rebaseline`.

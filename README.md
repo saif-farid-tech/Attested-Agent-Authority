@@ -244,12 +244,24 @@ make teardown       # removes everything the project created, and only that
 | `make build` | full build from scratch (~20 min), ends at a passing check + snapshot |
 | `make doctor` | one-shot health check of the whole chain — **run this when stuck** |
 | `make verify` | run the six-stage health check (see below) |
-| `make demo` | the demonstration, restartable in ~30 s — made for filming |
-| `make rebaseline` | re-measure and re-sign the allowlist (needed after you edit the agent — [CORRECTIONS.md](CORRECTIONS.md) #10) |
+| `make demo` | run the demonstration — **and to restart it, just run this again**; it resets to a clean state first (~30 s) |
+| `make reset` | return to the clean, passing state on demand (cold-boot restore of the snapshot) |
 | `make console` | start the verifier loop + the web UI on port 9000 |
 | `make measure` | run the tamper-to-powerless timing experiment, results to a CSV file ([docs/EXPOSURE.md](docs/EXPOSURE.md)) |
-| `make reset` | restore the VM to its certified snapshot (undoes the tamper) |
+| `make rebaseline` | **only after you *edit the agent's code*** — re-measure and re-sign the allowlist ([CORRECTIONS.md](CORRECTIONS.md) #10). Not for restarting the demo. |
 | `make teardown` | delete every VM, container, network and folder the project made |
+
+**Restarting the demo.** Run `make demo` again — its first act resets the VM
+to the clean `demo-ready` snapshot with a real reboot, so attestation passes
+and the agent gets funded again. Do **not** use `make rebaseline` to restart:
+that re-freezes the allowlist around the VM's *current* state, which corrupts
+your clean baseline. `rebaseline` is only for when you have deliberately
+changed the agent's code and want the new binary to become the trusted one.
+
+> Why a reboot? The tamper's real effect is in the kernel's runtime IMA
+> measurement log, not the file on disk. Restoring the disk alone leaves that
+> log intact, so only a cold boot (`make reset`, or `make demo`'s first act)
+> truly returns to a passing state.
 
 ## When something breaks
 

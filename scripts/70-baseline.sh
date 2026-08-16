@@ -24,6 +24,16 @@ for host in "${AAA_FLEET[@]}"; do
 done
 ok "fleet names resolvable inside the VM"
 
+# ---- never baseline a tampered profile -------------------------------------
+# If a previous demo was interrupted between the tamper and its restore, the
+# profile still carries a self-modification line. Baselining that would freeze
+# the TAMPERED constraint into the allowlist and the snapshot — corrupting the
+# clean state forever. Strip any such line so the baseline is always pristine.
+if vm_exec sh -c 'grep -q "# harden self-modification" /etc/apparmor.d/harden' 2>/dev/null; then
+  warn "profile carried a leftover tamper line — stripping it before baselining"
+  vm_exec sh -c 'sed -i "/# harden self-modification/d" /etc/apparmor.d/harden'
+fi
+
 # ---- run the agent once so everything it touches gets measured -------------
 # No certificate exists yet, so the pass reports NO AUTHORITY on every host —
 # expected. What matters is that python, agent.py, config.json and the ssh
