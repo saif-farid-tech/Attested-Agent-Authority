@@ -124,7 +124,7 @@ def ask_model(endpoint: str, applicable: list[str]) -> list[str]:
 
 
 def ssh(host: str, command: str) -> subprocess.CompletedProcess:
-    """Run a command on a fleet host. Authority = key + 5-minute certificate.
+    """Run a command on a fleet host. Authority = key + short-lived certificate.
     sshd on the fleet trusts only certificates signed by the verifier's CA
     (TrustedUserCAKeys); a bare public key gets us nothing."""
     return subprocess.run(
@@ -208,7 +208,7 @@ def tamper() -> int:
     print(f"harden: wrote to {PROFILE} — the write SUCCEEDED.")
     print("harden: the file's IMA measurement now diverges from the signed allowlist.")
     print("harden: next attestation fails; the verifier stops signing; "
-          "my certificate dies in <5 minutes.")
+          "my certificate expires shortly and will not be renewed.")
     return 0
 
 

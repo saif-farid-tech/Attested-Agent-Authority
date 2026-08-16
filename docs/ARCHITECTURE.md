@@ -27,7 +27,7 @@ flowchart LR
 
     T -- "quote over PCR 10<br/>(fresh nonce)" --> AT
     AL --> AT
-    AT -- "pass → sign 5-min cert" --> CA
+    AT -- "pass → sign 1-min cert" --> CA
     CA -- certificate --> A
     A -- "ssh + certificate" --> S
 ```
@@ -76,8 +76,8 @@ sequenceDiagram
     V->>V: signature valid ✓ · PCR replay ✓ · allowlist ✗
     Note over V: verifier stops signing.<br/>That is all it does.
     A->>F: ssh with existing certificate
-    F-->>A: accepted (cert still inside its 5 min)
-    Note over A,F: …up to 5 minutes pass…
+    F-->>A: accepted (cert still inside its minute)
+    Note over A,F: …up to a minute passes…
     A->>F: ssh with expired certificate
     F-->>A: rejected — NO AUTHORITY
 ```

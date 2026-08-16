@@ -3,7 +3,7 @@
 
 Runs on the HOST (standing in for the Ubuntu Core verifier box — see
 docs/ARCHITECTURE.md). Every INTERVAL seconds it runs the same six-stage
-cycle as attest-once.py. On a pass it signs a five-minute SSH certificate
+cycle as attest-once.py. On a pass it signs a short-lived SSH certificate
 for the agent's public key and pushes it into the workload VM. On a fail
 it simply stops signing.
 
@@ -26,7 +26,11 @@ REPO = HERE.parent
 STATE = Path(os.environ.get("AAA_STATE", Path.home() / "attested-agent"))
 STATUS = Path(os.environ.get("AAA_STATUS", REPO / "console" / "status.json"))
 VM = os.environ.get("AAA_VM", "harden")
-CERT_TTL = int(os.environ.get("AAA_CERT_TTL", "300"))       # seconds
+# Certificate lifetime. Short on purpose: it bounds the tamper→powerless
+# window and keeps the demo watchable. 60 s pairs with the 30 s attestation
+# interval so a funded agent's cert is refreshed well before it lapses, while
+# the post-tamper drain still finishes inside ~90 s. Override with AAA_CERT_TTL.
+CERT_TTL = int(os.environ.get("AAA_CERT_TTL", "60"))        # seconds
 INTERVAL = int(os.environ.get("AAA_INTERVAL", "30"))
 MAX_EVENTS = 60
 
@@ -36,21 +40,27 @@ attest_once = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(attest_once)
 
 
+# ssh-keygen validity is whole minutes, so the real cert life is minutes*60.
+# Everything downstream (expiry, the console's filament scale) uses this so a
+# non-multiple-of-60 AAA_CERT_TTL can't desync the display from reality.
+CERT_MINUTES = max(1, CERT_TTL // 60)
+CERT_SECONDS = CERT_MINUTES * 60
+
+
 def issue_certificate() -> float:
-    """Sign a 5-minute certificate for the agent's key and push it into the
+    """Sign a short-lived certificate for the agent's key and push it into the
     VM. Returns the expiry as a unix timestamp."""
     pub = STATE / "harden_key.pub"
     ca = STATE / "ssh_ca"
-    minutes = max(1, CERT_TTL // 60)
     subprocess.run(
         ["ssh-keygen", "-q", "-s", str(ca), "-I", "harden-agent",
-         "-n", "harden", "-V", f"+{minutes}m", str(pub)],
+         "-n", "harden", "-V", f"+{CERT_MINUTES}m", str(pub)],
         check=True)
     cert = STATE / "harden_key-cert.pub"
     subprocess.run(
         ["lxc", "file", "push", str(cert), f"{VM}/etc/ssh/harden-cert.pub"],
         check=True, capture_output=True)
-    return time.time() + minutes * 60
+    return time.time() + CERT_SECONDS
 
 
 def load_status() -> dict:
@@ -96,6 +106,7 @@ def ingest_dropbox(status: dict) -> bool:
 def main() -> int:
     STATUS.parent.mkdir(parents=True, exist_ok=True)
     status = load_status()
+    status["cert_ttl"] = CERT_SECONDS   # so the console scales the filament to any TTL
     add_event(status, "issue", f"verifier online, attesting every {INTERVAL}s")
     write_status(status)
     was_funded = status.get("cert_expires_at", 0) > time.time()
@@ -132,7 +143,7 @@ def main() -> int:
             try:
                 status["cert_expires_at"] = issue_certificate()
                 add_event(status, "issue",
-                          f"Certificate issued, valid {CERT_TTL // 60} min")
+                          f"Certificate issued, valid {CERT_MINUTES} min")
                 was_funded = True
             except subprocess.CalledProcessError as e:
                 status["attestation"] = "fail"

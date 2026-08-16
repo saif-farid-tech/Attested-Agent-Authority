@@ -3,11 +3,12 @@
 An AI agent's authority is cryptographically bound to the measured state of
 its own constraints: the Linux kernel (IMA) hashes everything the agent runs
 and everything root reads — including the agent's AppArmor profile — into a
-TPM, and a separate verifier signs a five-minute SSH certificate only while
+TPM, and a separate verifier signs a one-minute SSH certificate only while
 those measurements match a signed allowlist. When the agent modifies its own
 constraint, the write **succeeds** — and the measurements diverge, attestation
-fails, the verifier stops signing, and within five minutes the agent cannot
-touch anything. The agent is not denied; **it is defunded.**
+fails, the verifier stops signing, and within a minute the agent cannot touch
+anything. The agent is not denied; **it is defunded.** (The certificate
+lifetime is configurable via `AAA_CERT_TTL`; one minute keeps the demo brisk.)
 
 ```sh
 make preflight && make build     # ~20 min, ends at a passing attestation
@@ -99,7 +100,7 @@ simply stops refilling, and your lamp dies mid-shift.
 | **AppArmor profile** | the agent's written constraint — a text file listing which files and programs it may touch, enforced by the system's core. Crucially, the profile *permits the agent to edit the profile itself*. That's the loaded gun on the mantelpiece |
 | **IMA** | a court stenographer built into Linux: every program that runs and every file the admin account reads gets its **hash** — a short digital fingerprint that changes completely if even one byte of the file changes — appended to a tamper-proof log |
 | **TPM** | a tiny vault chip holding a running fingerprint of that whole log. On request it signs a statement of the current fingerprint (a "quote"), and it is physically unable to sign a false one. Fingerprints can be added but never removed — the agent cannot un-say what it did |
-| **Verifier** (`verifier/verifier.py`) | a program on the other side of the wall. Every 30 seconds it demands a fresh quote, checks it against the **allowlist** (a signed inventory of every fingerprint that *should* be there), and — only if everything matches — signs a **certificate**: a permission slip for the agent that expires after five minutes |
+| **Verifier** (`verifier/verifier.py`) | a program on the other side of the wall. Every 30 seconds it demands a fresh quote, checks it against the **allowlist** (a signed inventory of every fingerprint that *should* be there), and — only if everything matches — signs a **certificate**: a permission slip for the agent that expires after one minute |
 | **The fleet** (`web-01`, `db-01`, `gw-01`) | three servers that know nothing about any of this. They accept exactly one thing: a currently-valid certificate signed by the verifier. No passwords, no permanent keys |
 
 **The demonstration.** `make demo` plays out in eight acts, and the point
@@ -121,9 +122,9 @@ arrives from an unexpected direction:
    apparently having gotten away with it.
 4. Thirty seconds later the verifier's routine check fails — and does the
    only thing it ever does: it stops signing. The agent's current permission
-   slip keeps working while its remaining minutes drain away on the console,
-   the agent still operating on borrowed time, until the second it expires
-   and every server refuses it at once.
+   slip keeps working while its last seconds drain away on the console, the
+   agent still operating on borrowed time, until the second it expires and
+   every server refuses it at once.
 5. The actual climax: the agent puts the original file back, byte for byte —
    and attestation **still fails.** The log is append-only; the tampering is
    in the measured *history*, not just the current files. There is no

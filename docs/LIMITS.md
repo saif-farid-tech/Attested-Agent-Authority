@@ -9,10 +9,11 @@ authority. The window is bounded — certificate TTL plus one attestation
 interval, worst case — but it is not zero and cannot be zero in this design:
 revocation-by-expiry trades immediacy for the enormous simplification of
 stateless fleet hosts. The window is measured, not hand-waved:
-`make measure` reproduces the numbers in [EXPOSURE.md](EXPOSURE.md). If your
-threat model cannot tolerate minutes of exposure, you need shorter TTLs (and
-the re-issue traffic that implies), or online revocation (and the
-infrastructure *that* implies).
+`make measure` reproduces the numbers in [EXPOSURE.md](EXPOSURE.md) — on the
+order of a minute at the default 60 s TTL. If your threat model cannot
+tolerate even that much exposure, you need shorter TTLs (and the re-issue
+traffic that implies), or online revocation (and the infrastructure *that*
+implies).
 
 ## IMA measures files, not semantics
 

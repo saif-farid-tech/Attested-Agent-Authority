@@ -181,7 +181,7 @@
   </div>
   <div id="track"><div id="fill"></div></div>
   <div id="fila-note">Every passing attestation refills this bar with a fresh
-    5-minute certificate. If the verifier stops signing, nothing resets it —
+    short-lived certificate. If the verifier stops signing, nothing resets it —
     it simply runs out.</div>
 </section>
 
@@ -209,7 +209,7 @@
   </div>
   <div class="node" id="n-ca">
     <h3><span class="dot"></span>CA</h3>
-    <div class="who">signs 5-minute certificates</div>
+    <div class="who">signs short-lived certificates</div>
     <div class="st" id="s-ca">issuing on every pass</div>
   </div>
   <div class="node" id="n-fleet">
@@ -233,7 +233,7 @@ measured.</footer>
 // This console shows ONLY what the verifier actually reports. There is no
 // scripted or simulated mode: if there is no live status.json, it says so,
 // rather than performing a passing/failing arc that never happened.
-const CERT_TTL = 300;
+let certTtl = 60;   // filament full-scale; overwritten by status.json's cert_ttl
 const $ = id => document.getElementById(id);
 let lastGood = null;     // the most recent REAL reading from status.json
 let lastOkAt = 0;        // when we last fetched it (for the staleness notice)
@@ -292,6 +292,7 @@ function renderAgent(st, mode, left) {
         but we are still showing the last real numbers ---------------------- */
 function render(st, stale) {
   const now = Date.now() / 1000;
+  if (st.cert_ttl > 0) certTtl = st.cert_ttl;
   const att = st.attestation;
   const hasCert = (st.cert_expires_at || 0) > 0;
   const left = hasCert ? st.cert_expires_at - now : 0;
@@ -318,7 +319,8 @@ function render(st, stale) {
   } else if (funded) {
     h.textContent = "AGENT FUNDED"; h.className = "";
     sub.textContent = staleNote + (st.reason || "") + "  The verifier re-checks "
-      + "the workload every 30 seconds and pays out authority 5 minutes at a time.";
+      + "the workload every 30 seconds and only then renews the agent's "
+      + "short-lived authority.";
   } else {
     // verifier is up but has no certificate yet (starting, or a setup error)
     h.textContent = att === "error" ? "VERIFIER PROBLEM" : "AWAITING ATTESTATION";
@@ -328,7 +330,7 @@ function render(st, stale) {
   }
 
   // filament
-  $("fill").style.width = (Math.max(0, Math.min(1, left / CERT_TTL)) * 100) + "%";
+  $("fill").style.width = (Math.max(0, Math.min(1, left / certTtl)) * 100) + "%";
   $("fill").className = dead ? "dead-fill" : draining ? "draining-fill" : "";
   $("countdown").textContent = hasCert ? (dead ? "0:00" : fmt(left)) : "—";
   document.body.classList.toggle("dead", dead);

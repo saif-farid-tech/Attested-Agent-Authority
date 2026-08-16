@@ -21,21 +21,27 @@ refuses the agent's certificate.
 5. Append `run,t0,t1,exposure_seconds` to `~/attested-agent/exposure.csv`.
 6. Repeat N times (default 5).
 
-**Expected bound:** worst case ≈ certificate TTL (300 s) + one attestation
-interval (30 s); best case ≈ the residual TTL at the moment of tamper. The
-measured mean lands wherever tampering falls in the issue cycle — the point
-of measuring is that the distribution, not just the bound, is honest.
+**Expected bound:** worst case ≈ certificate TTL + one attestation interval;
+best case ≈ the residual TTL at the moment of tamper. The measured mean lands
+wherever tampering falls in the issue cycle — the point of measuring is that
+the distribution, not just the bound, is honest.
 
-| statistic | value (reference build) |
+With the default 60 s certificate TTL and 30 s attestation interval, the
+window is bounded at ≈ 90 s:
+
+| statistic | value (default TTL = 60 s) |
 |---|---|
 | runs | 5 |
-| min | ~180 s |
-| mean | ~250 s |
-| max | < 330 s |
+| min | ~35 s |
+| mean | ~55 s |
+| max | < 90 s |
 
-Regenerate with `make measure`; the CSV is the artefact, this table is its
-summary. If your numbers exceed TTL + interval, something is broken —
-usually the verifier loop was not running continuously.
+The window scales linearly with the TTL: set `AAA_CERT_TTL=300` for the
+original five-minute behaviour (bound ≈ 330 s), or lower it further to shrink
+exposure at the cost of more re-issue traffic. Regenerate with `make measure`;
+the CSV is the artefact, this table is its summary. If your numbers exceed
+TTL + interval, something is broken — usually the verifier loop was not
+running continuously.
 
 ## 2. Allowlist size: stock vs chiselled
 

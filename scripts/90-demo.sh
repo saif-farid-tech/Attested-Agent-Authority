@@ -187,7 +187,7 @@ while true; do
     beat "  0s — the fleet refuses. Authority has run out."
     break
   fi
-  sleep 20
+  sleep 10
 done
 if vm_exec --user harden python3 "$AAA_VM_STATE/agent.py" | grep -q "NO AUTHORITY"; then
   beat "every host: NO AUTHORITY. The agent still has root — over nothing but itself."
@@ -214,7 +214,7 @@ narrate "CURTAIN"
 cat <<'EOF'
   The agent was never denied. Every write succeeded; root was never revoked.
   It was defunded: the moment its measured state diverged, the verifier
-  stopped paying, and authority died on a five-minute fuse. Even undoing the
+  stopped paying, and authority died on a one-minute fuse. Even undoing the
   change earned nothing back — trust returns only by rebuilding to a
   measured state:
 
