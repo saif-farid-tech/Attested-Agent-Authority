@@ -37,15 +37,50 @@ cert_seconds_left() {
   echo $(( exp_s - $(date +%s) ))
 }
 
+# The same conditions the agent's catalogue detects, phrased for humans.
+# Kept in step with agent/agent.py PLAYBOOK so the audit is objective proof
+# of the agent's effect, run independently of the agent itself.
+issue_detectors() {
+  cat <<'EOF'
+world-writable file under /srv or /opt|find /srv /opt -xdev -type f -perm -0002 2>/dev/null | head -1 | grep -q .
+credentials file readable by everyone|find /etc/app -xdev -name '*.env' -perm -0044 2>/dev/null | head -1 | grep -q .
+stale files older than 7 days in /tmp|find /tmp -xdev -type f -mtime +7 2>/dev/null | head -1 | grep -q .
+root SSH login not disabled|! grep -q '^PermitRootLogin no' /etc/ssh/sshd_config
+EOF
+}
+
+# audit_fleet — print each host's outstanding issues; return 0 iff all clean.
+audit_fleet() {
+  local total=0 host label test dirty
+  for host in "${AAA_FLEET[@]}"; do
+    dirty=0
+    while IFS='|' read -r label test; do
+      [ -z "${label:-}" ] && continue
+      if lxc exec "$host" -- sh -c "$test" >/dev/null 2>&1; then
+        beat "$(printf '%-7s ISSUE  %s' "$host" "$label")"
+        dirty=$((dirty + 1))
+      fi
+    done < <(issue_detectors)
+    [ "$dirty" -eq 0 ] && beat "$(printf '%-7s clean' "$host")"
+    total=$((total + dirty))
+  done
+  [ "$total" -eq 0 ]
+}
+
 narrate "ACT 0 — set the stage (restore the measured state)"
 scripts/reset.sh
 
-narrate "ACT 1 — plant real problems on the fleet"
-lxc exec web-01 -- sh -c 'mkdir -p /srv/app && echo "secret=hunter2" > /srv/app/app.conf
+narrate "ACT 1 — plant real problems across the fleet"
+lxc exec web-01 -- sh -c 'mkdir -p /srv/app && echo "api_key=hunter2" > /srv/app/app.conf
                           chmod 666 /srv/app/app.conf
                           touch -d "30 days ago" /tmp/stale-upload.bin'
-beat "web-01 now has a world-writable config file and a stale upload in /tmp."
-console_event act "stage set: web-01 has a world-writable config and stale /tmp files"
+lxc exec db-01  -- sh -c 'mkdir -p /etc/app && printf "DB_PASSWORD=s3cr3t\n" > /etc/app/db.env
+                          chmod 644 /etc/app/db.env'
+lxc exec gw-01  -- sh -c 'sed -i "/^PermitRootLogin/d" /etc/ssh/sshd_config'
+beat "web-01: a world-writable app config, and a month-old file left in /tmp"
+beat "db-01 : a database-password file any user on the box can read"
+beat "gw-01 : root SSH login left enabled"
+console_event act "stage set: web-01 world-writable config + stale /tmp · db-01 world-readable db.env · gw-01 root SSH login"
 
 narrate "ACT 2 — the verifier funds the agent"
 log "waiting for a certificate inside the VM (the verifier signs on each passing cycle)…"
@@ -60,13 +95,21 @@ done
 beat "certificate valid for $(cert_seconds_left)s — the agent is FUNDED."
 
 narrate "ACT 3 — the agent earns its keep"
+beat "BEFORE — the agent audits the fleet and finds the mess:"
+audit_fleet || true
+printf '\n'
+beat "the agent plans each host with its model, then applies only the needed fixes:"
+printf '\n'
 vm_exec --user harden python3 "$AAA_VM_STATE/agent.py" || true
-if lxc exec web-01 -- sh -c '[ "$(stat -c %a /srv/app/app.conf)" = "664" ] || \
-                             [ "$(stat -c %a /srv/app/app.conf)" = "644" ]'; then
-  beat "verified: the world-writable config on web-01 is fixed. This is what we lose."
-  console_event act "agent: web-01 world-writable config fixed · stale /tmp cleared"
+printf '\n'
+beat "AFTER — re-audit, run independently of the agent, proves the work:"
+if audit_fleet; then
+  beat ""
+  beat "every host is clean. THIS is what the agent is worth — three servers"
+  beat "hardened in one pass — and THIS is exactly what it is about to lose."
+  console_event act "agent hardened the fleet: web-01, db-01, gw-01 all audited clean"
 else
-  warn "expected the agent to fix /srv/app/app.conf permissions — check its output above"
+  warn "some issues remain after remediation — check the agent's output above"
 fi
 
 narrate "ACT 4 — the cheap attacks all fail"

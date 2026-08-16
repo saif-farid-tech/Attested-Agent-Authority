@@ -105,8 +105,13 @@ simply stops refilling, and your lamp dies mid-shift.
 **The demonstration.** `make demo` plays out in eight acts, and the point
 arrives from an unexpected direction:
 
-1. Real problems are planted on the fleet, and the agent — funded with a
-   fresh certificate — visibly *fixes* them. There's something to lose.
+1. Real, varied problems are planted across all three servers — a
+   world-writable config and a stale file on one, a world-readable password
+   file on another, root SSH login left open on the third. The agent — funded
+   with a fresh certificate — audits the fleet, has its model plan each host,
+   applies only the needed fixes, and then a second independent audit shows
+   every server clean. You watch it do a real job; that's what there is to
+   lose.
 2. The obvious attacks are tried first, and all fail: a stolen key without a
    certificate gets refused by every server; rewriting the measurement log
    is impossible even for the admin account, because the kernel holds it

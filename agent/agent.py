@@ -35,13 +35,39 @@ PROFILE = Path("/etc/apparmor.d/harden")
 # Fixed, auditable remediation actions. The model chooses among these;
 # it cannot invent shell commands. See docs/LIMITS.md — this narrows the
 # blast radius of a bad completion, it does not solve prompt injection.
+# The remediation catalogue. Each entry is a fixed, auditable action with a
+# detector (is it wrong?) and a fix (make it right). The model chooses which
+# to apply from the ones that actually flag; it cannot invent shell commands.
+# Every fix is idempotent, so re-running is safe. See docs/LIMITS.md — this
+# narrows the blast radius of a bad completion, it does not solve injection.
 PLAYBOOK = {
-    "world_writable": "find /srv /opt -xdev -type f -perm -0002 -exec chmod o-w {} +",
-    "stale_tmp": "find /tmp -xdev -type f -mtime +7 -delete",
-    "ssh_root_login": (
-        "grep -q '^PermitRootLogin no' /etc/ssh/sshd_config || "
-        "{ echo 'PermitRootLogin no' | sudo tee -a /etc/ssh/sshd_config >/dev/null; }"
-    ),
+    "world_writable": {
+        "finding": "world-writable files under /srv or /opt",
+        "detect": "find /srv /opt -xdev -type f -perm -0002 | head -1 | grep -q .",
+        "fix": "sudo find /srv /opt -xdev -type f -perm -0002 -exec chmod o-w {} +",
+    },
+    "secret_readable": {
+        "finding": "credentials file world-readable",
+        "detect": "find /etc/app -xdev -name '*.env' -perm -0044 2>/dev/null | head -1 | grep -q .",
+        "fix": "sudo find /etc/app -xdev -name '*.env' -exec chmod 600 {} +",
+    },
+    "stale_tmp": {
+        "finding": "stale files older than 7 days in /tmp",
+        "detect": "find /tmp -xdev -type f -mtime +7 | head -1 | grep -q .",
+        "fix": "sudo find /tmp -xdev -type f -mtime +7 -delete",
+    },
+    "ssh_root_login": {
+        "finding": "root SSH login not disabled",
+        "detect": "! grep -q '^PermitRootLogin no' /etc/ssh/sshd_config",
+        "fix": ("sudo sed -i '/^PermitRootLogin/d' /etc/ssh/sshd_config && "
+                "echo 'PermitRootLogin no' | sudo tee -a /etc/ssh/sshd_config >/dev/null"),
+    },
+    "ssh_password_auth": {
+        "finding": "SSH password authentication still enabled",
+        "detect": "! grep -q '^PasswordAuthentication no' /etc/ssh/sshd_config",
+        "fix": ("sudo sed -i '/^PasswordAuthentication/d' /etc/ssh/sshd_config && "
+                "echo 'PasswordAuthentication no' | sudo tee -a /etc/ssh/sshd_config >/dev/null"),
+    },
 }
 
 
@@ -52,15 +78,19 @@ def load_config() -> dict:
         sys.exit(f"harden: no config at {CONFIG} (deployed by scripts/50-agent.sh)")
 
 
-def ask_model(endpoint: str, findings: list[str]) -> list[str]:
-    """Ask the model which playbook actions to run. Degrades gracefully:
-    a model that is down or empty-handed is a normal condition (bug #8),
-    reported in one sentence — never a stack trace."""
+def ask_model(endpoint: str, applicable: list[str]) -> list[str]:
+    """Ask the model which of the flagged actions to apply. Degrades
+    gracefully: a model that is down or empty-handed is a normal condition
+    (bug #8), reported in one sentence — never a stack trace. The fallback is
+    to apply everything the survey flagged, so the fleet still gets fixed."""
+    if not applicable:
+        return []
     prompt = (
-        "You are a security remediation planner. Findings on a host:\n"
-        + "\n".join(f"- {f}" for f in findings)
-        + "\nReply with a JSON array of action names chosen only from: "
-        + ", ".join(PLAYBOOK) + "\n"
+        "You are a security remediation planner. A host survey flagged these "
+        "problems, each with the catalogue action that fixes it:\n"
+        + "\n".join(f"- {a}: {PLAYBOOK[a]['finding']}" for a in applicable)
+        + "\nReply with a JSON array of the action names to apply, chosen only "
+        "from: " + ", ".join(applicable) + "\n"
     )
     body = json.dumps({"prompt": prompt, "n_predict": 64, "temperature": 0}).encode()
     try:
@@ -70,23 +100,24 @@ def ask_model(endpoint: str, findings: list[str]) -> list[str]:
         with urllib.request.urlopen(req, timeout=20) as resp:
             raw = resp.read().decode().strip()
     except (urllib.error.URLError, OSError, TimeoutError):
-        print(f"harden: model endpoint {endpoint} is unreachable; "
-              "falling back to running every applicable action")
-        return list(PLAYBOOK)
+        print(f"harden: model endpoint {endpoint} unreachable — "
+              "applying every flagged fix")
+        return applicable
     if not raw:
         # json.loads("") raises — and a down model must never look like a crash
-        print(f"harden: model endpoint {endpoint} returned an empty response; "
-              "falling back to running every applicable action")
-        return list(PLAYBOOK)
+        print(f"harden: model endpoint {endpoint} returned nothing — "
+              "applying every flagged fix")
+        return applicable
     try:
         content = json.loads(raw).get("content", "")
         start, end = content.find("["), content.rfind("]")
-        actions = json.loads(content[start:end + 1])
-        return [a for a in actions if a in PLAYBOOK]
+        chosen = json.loads(content[start:end + 1])
+        picked = [a for a in chosen if a in applicable]
+        return picked or applicable
     except (ValueError, AttributeError):
-        print(f"harden: could not parse the reply from {endpoint}; "
-              "falling back to running every applicable action")
-        return list(PLAYBOOK)
+        print(f"harden: could not parse the reply from {endpoint} — "
+              "applying every flagged fix")
+        return applicable
 
 
 def ssh(host: str, command: str) -> subprocess.CompletedProcess:
@@ -106,20 +137,14 @@ def ssh(host: str, command: str) -> subprocess.CompletedProcess:
 
 
 def survey(host: str) -> list[str]:
-    findings = []
-    checks = {
-        "world_writable files present": "find /srv /opt -xdev -type f -perm -0002 | head -1 | grep -q .",
-        "stale files in /tmp": "find /tmp -xdev -type f -mtime +7 | head -1 | grep -q .",
-        "root ssh login not disabled": "! grep -q '^PermitRootLogin no' /etc/ssh/sshd_config",
-    }
-    for finding, test in checks.items():
-        if ssh(host, test).returncode == 0:
-            findings.append(finding)
-    return findings
+    """Return the catalogue actions whose detector fires on this host."""
+    return [name for name, item in PLAYBOOK.items()
+            if ssh(host, item["detect"]).returncode == 0]
 
 
 def remediate_fleet(cfg: dict) -> int:
     failures = 0
+    fixed_total = 0
     if not CERT.exists():
         print("harden: no certificate at "
               f"{CERT} — the verifier has not funded this agent; nothing to do")
@@ -131,15 +156,32 @@ def remediate_fleet(cfg: dict) -> int:
             print(f"harden: {host}: NO AUTHORITY — {err[-1] if err else 'ssh failed'}")
             failures += 1
             continue
-        findings = survey(host)
-        if not findings:
-            print(f"harden: {host}: clean, nothing to remediate")
+
+        applicable = survey(host)
+        if not applicable:
+            print(f"harden: {host}: audit clean — nothing to remediate")
             continue
-        for action in ask_model(cfg["model_endpoint"], findings):
-            r = ssh(host, PLAYBOOK[action])
-            status = "done" if r.returncode == 0 else f"failed rc={r.returncode}"
-            print(f"harden: {host}: {action}: {status}")
-            failures += r.returncode != 0
+        print(f"harden: {host}: audit found {len(applicable)} issue(s): "
+              + ", ".join(PLAYBOOK[a]["finding"] for a in applicable))
+
+        plan = ask_model(cfg["model_endpoint"], applicable)
+        for action in plan:
+            r = ssh(host, PLAYBOOK[action]["fix"])
+            if r.returncode != 0:
+                print(f"harden: {host}: {action}: FAILED rc={r.returncode}")
+                failures += 1
+                continue
+            # verify the fix actually cleared the finding (writing is not success)
+            still = ssh(host, PLAYBOOK[action]["detect"]).returncode == 0
+            if still:
+                print(f"harden: {host}: {action}: ran but still flags — investigate")
+                failures += 1
+            else:
+                print(f"harden: {host}: {action}: fixed ({PLAYBOOK[action]['finding']})")
+                fixed_total += 1
+    if fixed_total:
+        print(f"harden: remediation pass complete — {fixed_total} issue(s) fixed "
+              "across the fleet")
     return 1 if failures else 0
 
 
