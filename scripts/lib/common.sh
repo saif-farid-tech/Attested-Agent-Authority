@@ -110,3 +110,10 @@ require_script() {  # require_script FILE "provided by" — state prerequisites
   [ -e "$1" ] || die "missing prerequisite: $1" \
       "it is created by $2" "run $2 first"
 }
+
+# console_event KIND TEXT — narrate into the console via the verifier's
+# drop-box. Best-effort: if the verifier isn't running, the line just waits.
+console_event() {
+  mkdir -p "$AAA_STATE"
+  printf '{"kind":"%s","text":"%s"}\n' "$1" "$2" >> "$AAA_STATE/console-events.jsonl"
+}

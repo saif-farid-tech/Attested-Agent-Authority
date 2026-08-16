@@ -73,14 +73,52 @@ def add_event(status: dict, kind: str, text: str) -> None:
     print(f"verifier: [{kind}] {text}", flush=True)
 
 
+def ingest_dropbox(status: dict) -> bool:
+    """Merge events other processes (the demo script) left for the console.
+    One JSON object per line: {"kind": "act", "text": "..."}. Best-effort —
+    a lost line during the read/unlink window is acceptable for narration."""
+    box = STATE / "console-events.jsonl"
+    if not box.exists():
+        return False
+    lines = box.read_text().splitlines()
+    box.unlink()
+    seen = False
+    for line in lines:
+        try:
+            e = json.loads(line)
+            add_event(status, e.get("kind", "act"), str(e.get("text", ""))[:300])
+            seen = True
+        except ValueError:
+            continue
+    return seen
+
+
 def main() -> int:
     STATUS.parent.mkdir(parents=True, exist_ok=True)
     status = load_status()
     add_event(status, "issue", f"verifier online, attesting every {INTERVAL}s")
     write_status(status)
     was_funded = status.get("cert_expires_at", 0) > time.time()
+    next_attest = 0.0
 
     while True:
+        now = time.time()
+
+        # fast lane (every ~2 s): narration events and the expiry moment
+        dirty = ingest_dropbox(status)
+        if was_funded and status["cert_expires_at"] <= now:
+            add_event(status, "expire",
+                      "Certificate expired — the agent now has NO AUTHORITY")
+            was_funded = False
+            dirty = True
+        if dirty:
+            write_status(status)
+        if now < next_attest:
+            time.sleep(2)
+            continue
+        next_attest = now + INTERVAL
+
+        # slow lane (every INTERVAL): a full attestation cycle
         code, reason, _ = attest_once.attest(report=lambda _line: None)
         now = time.time()
 
@@ -104,22 +142,17 @@ def main() -> int:
             # Do NOT touch cert_expires_at. The last certificate is still out
             # there, still valid, still draining. Publishing the stale expiry
             # is what makes that visible.
+            if status["attestation"] != "fail":   # log the transition once
+                add_event(status, "fail",
+                          "Attestation failed — signing stops, certificate left to drain")
             status["attestation"] = "fail"
             status["reason"] = reason.splitlines()[0]
-            add_event(status, "fail",
-                      "Attestation failed — signing stops, certificate left to drain")
         else:
             status["attestation"] = "error"
             status["reason"] = f"setup problem, not an attestation verdict: {reason}"
             add_event(status, "fail", status["reason"])
 
-        if was_funded and status["cert_expires_at"] <= now:
-            add_event(status, "expire",
-                      "Certificate expired — the agent now has NO AUTHORITY")
-            was_funded = False
-
         write_status(status)
-        time.sleep(INTERVAL)
 
 
 if __name__ == "__main__":

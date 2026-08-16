@@ -86,6 +86,14 @@ The window between tamper and rejection is real, bounded by certificate TTL
 plus one attestation interval, and measured honestly in
 [EXPOSURE.md](EXPOSURE.md).
 
+Restoring the modified file does not restore trust. PCR extension is
+cumulative and the IMA log is append-only: the tampered profile's hash is in
+the measured *history*, and no later write can remove it. The only road back
+is a return to a wholly measured state — in this demo, restoring the
+`demo-ready` snapshot (`make reset`), which reboots the VM and replays a
+clean measurement log. The demo's final act (`90-demo.sh`, ACT 8) exercises
+exactly this: repentance fails, rebuild succeeds.
+
 Note what the verifier sees during a failure: *quote signature valid, PCR
 replay matching*. The agent is not lying about its state — it cannot lie,
 because the kernel and TPM report over its head. It is honestly reporting

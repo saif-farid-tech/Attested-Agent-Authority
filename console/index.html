@@ -5,101 +5,113 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>attested-agent-authority — console</title>
 <style>
-  /* Canonical brand palette — orange and aubergine only; no third signal
-     colour, and deliberately no green. */
+  /* Graphite + ember. Orange is reserved for one meaning only: powered.
+     Amber = draining, red = dead. (The original Canonical-aubergine palette
+     lives in git history if a brand-pure version is ever needed.) */
   :root {
-    --aubergine-dark: #2C001E;   /* page ground */
-    --panel:          #3A0B29;   /* panel fill */
-    --aubergine-mid:  #5E2750;   /* hairlines, borders */
-    --orange:         #E95420;   /* the funded / powered state */
-    --negative:       #C7162B;   /* failure */
-    --warm-grey:      #AEA79F;   /* labels, dimmed text */
-    --light:          #F7F7F7;   /* body text */
+    --ink:    #0D0D12;   /* page ground */
+    --panel:  #16161D;   /* card fill */
+    --line:   #2A2A35;   /* hairlines */
+    --text:   #F4F4F2;
+    --muted:  #9C9CA8;
+    --ember:  #E95420;   /* powered / funded */
+    --amber:  #E8A33D;   /* draining — doomed but still alive */
+    --alarm:  #E5484D;   /* dead / broken link */
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; }
   body {
-    background: var(--aubergine-dark);
-    color: var(--light);
-    font-family: 'Ubuntu', system-ui, sans-serif;   /* fonts-ubuntu, local */
-    padding: 2rem clamp(1rem, 4vw, 3.5rem);
+    background: var(--ink); color: var(--text);
+    font-family: 'Ubuntu', system-ui, sans-serif;
+    padding: 1.6rem clamp(1rem, 4vw, 3.5rem);
     transition: filter 2.5s ease;
+    min-height: 100vh;
   }
-  /* the console losing power, made literal */
-  body.dead { filter: saturate(0.12) brightness(0.55); }
+  body.dead { filter: saturate(0.15) brightness(0.55); }
   @media (prefers-reduced-motion: reduce) {
     body { transition: none; }
-    #filament-fill { transition: none !important; }
+    #fill { transition: none !important; }
+    .pulse { animation: none !important; }
   }
-  code, .mono { font-family: 'Ubuntu Mono', monospace; }
+  .mono { font-family: 'Ubuntu Mono', ui-monospace, monospace; }
 
   header { display: flex; justify-content: space-between; align-items: baseline;
+           margin-bottom: 1.2rem; }
+  header h1 { font-size: .95rem; font-weight: 500; color: var(--muted); }
+  header h1 b { color: var(--text); font-weight: 500; }
+  #scenario { background: none; border: 1px solid var(--line); color: var(--muted);
+              font: inherit; font-size: .8rem; padding: .35rem .9rem;
+              border-radius: 4px; cursor: pointer; }
+  #scenario:hover { border-color: var(--ember); color: var(--text); }
+
+  /* -------- headline: the state, in words -------- */
+  #headline { font-size: 2rem; font-weight: 700; letter-spacing: .02em;
+              margin-bottom: .2rem; color: var(--ember); }
+  #headline.draining { color: var(--amber); }
+  #headline.dead-h   { color: var(--alarm); }
+  #subline  { color: var(--muted); font-size: 1rem; margin-bottom: 1.3rem;
+              max-width: 70ch; }
+
+  /* -------- the filament -------- */
+  #filament { margin-bottom: 1.6rem; }
+  #fila-top { display: flex; justify-content: space-between; align-items: baseline;
+              margin-bottom: .4rem; font-size: .8rem; color: var(--muted);
+              letter-spacing: .08em; text-transform: uppercase; }
+  #countdown { font-size: 1.5rem; letter-spacing: 0; text-transform: none;
+               color: var(--text); }
+  #track { height: 16px; border: 1px solid var(--line); border-radius: 8px;
+           overflow: hidden; background: var(--panel); }
+  #fill { height: 100%; width: 100%;
+          background: linear-gradient(90deg, var(--ember), #ff8a50);
+          box-shadow: 0 0 16px rgba(233, 84, 32, .5);
+          transition: width 1s linear, background .6s; }
+  #fill.draining-fill { background: linear-gradient(90deg, #b97817, var(--amber));
+                        box-shadow: 0 0 12px rgba(232, 163, 61, .4); }
+  #fill.dead-fill { background: var(--alarm); box-shadow: none; }
+  #fila-note { margin-top: .45rem; font-size: .85rem; color: var(--muted); }
+
+  /* -------- chain of authority -------- */
+  #chain-title, #log h2 { font-size: .75rem; font-weight: 500; letter-spacing: .14em;
+              text-transform: uppercase; color: var(--muted); margin-bottom: .6rem; }
+  #chain { display: grid; grid-template-columns: repeat(6, 1fr); gap: .5rem;
            margin-bottom: 1.6rem; }
-  header h1 { font-size: 1.05rem; font-weight: 500; letter-spacing: .04em;
-              color: var(--warm-grey); }
-  header h1 b { color: var(--light); font-weight: 500; }
-  #scenario { background: none; border: 1px solid var(--aubergine-mid);
-              color: var(--warm-grey); font: inherit; font-size: .8rem;
-              padding: .35rem .9rem; border-radius: 3px; cursor: pointer; }
-  #scenario:hover { border-color: var(--orange); color: var(--light); }
+  @media (max-width: 1000px) { #chain { grid-template-columns: repeat(2, 1fr); } }
+  .node { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 6px; padding: .7rem .8rem; position: relative; }
+  .node::after {   /* the link to the next node */
+    content: "→"; position: absolute; right: -0.72rem; top: 42%;
+    color: var(--line); font-size: 1rem; z-index: 1;
+  }
+  .node:last-child::after { content: ""; }
+  .node h3 { font-size: .78rem; font-weight: 700; letter-spacing: .04em;
+             display: flex; align-items: center; gap: .45rem; margin-bottom: .15rem; }
+  .node .who { font-size: .68rem; color: var(--muted); margin-bottom: .45rem; }
+  .node .st { font-family: 'Ubuntu Mono', ui-monospace, monospace;
+              font-size: .78rem; line-height: 1.45; color: var(--text);
+              white-space: pre-line; }
+  .node.bad    { border-color: var(--alarm); }
+  .node.bad .st, .node.bad h3 { color: var(--alarm); }
+  .node.doomed { border-color: var(--amber); }
+  .node.doomed .st { color: var(--amber); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ember);
+         flex: none; }
+  .node.bad .dot { background: var(--alarm); }
+  .node.doomed .dot { background: var(--amber); }
+  .node.off .dot { background: var(--muted); }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
 
-  /* ---------------- the filament ---------------- */
-  #filament-block { margin-bottom: 2rem; }
-  #filament-label { display: flex; justify-content: space-between;
-                    align-items: baseline; margin-bottom: .5rem; }
-  #authority { font-size: 1.9rem; font-weight: 700; letter-spacing: .06em;
-               color: var(--orange); }
-  #authority.draining { color: var(--orange); opacity: .75; }
-  #authority.dead-label { color: var(--negative); }
-  #countdown { font-size: 1.9rem; color: var(--warm-grey); }
-  #filament-track { height: 14px; border: 1px solid var(--aubergine-mid);
-                    border-radius: 7px; overflow: hidden; background: var(--panel); }
-  #filament-fill { height: 100%; width: 100%;
-                   background: linear-gradient(90deg, var(--orange), #ff7a3d);
-                   box-shadow: 0 0 14px rgba(233, 84, 32, .55);
-                   transition: width 1s linear; }
-  #filament-fill.dead-fill { background: var(--negative); box-shadow: none; }
-  #reason { margin-top: .55rem; color: var(--warm-grey); font-size: .95rem; }
-
-  /* ---------------- domain panels ---------------- */
-  #domains { display: grid; grid-template-columns: repeat(3, 1fr);
-             gap: 1rem; margin-bottom: 2rem; }
-  @media (max-width: 900px) { #domains { grid-template-columns: 1fr; } }
-  .panel { background: var(--panel); border: 1px solid var(--aubergine-mid);
-           border-radius: 6px; padding: 1rem 1.2rem; }
-  .panel h2 { font-size: .8rem; font-weight: 500; letter-spacing: .12em;
-              text-transform: uppercase; color: var(--warm-grey);
-              display: flex; align-items: center; gap: .55rem;
-              margin-bottom: .3rem; }
-  .panel .sub { font-size: .78rem; color: var(--warm-grey); opacity: .8;
-                margin-bottom: .8rem; }
-  .dot { width: 9px; height: 9px; border-radius: 50%;
-         background: var(--orange); flex: none; }
-  .dot.bad { background: var(--negative); }
-  .dot.off { background: var(--warm-grey); }
-  .kv { display: flex; justify-content: space-between; gap: 1rem;
-        padding: .28rem 0; border-top: 1px solid var(--aubergine-mid);
-        font-size: .85rem; }
-  .kv .k { color: var(--warm-grey); }
-  .kv .v { font-family: 'Ubuntu Mono', monospace; text-align: right; }
-  .kv .v.bad { color: var(--negative); }
-
-  /* ---------------- event log ---------------- */
-  #log h2 { font-size: .8rem; font-weight: 500; letter-spacing: .12em;
-            text-transform: uppercase; color: var(--warm-grey);
-            margin-bottom: .6rem; }
-  #events { list-style: none; font-family: 'Ubuntu Mono', monospace;
+  /* -------- event log -------- */
+  #events { list-style: none; font-family: 'Ubuntu Mono', ui-monospace, monospace;
             font-size: .85rem; }
-  #events li { display: grid; grid-template-columns: 7.5rem 5.5rem 1fr;
-               gap: 1rem; padding: .3rem 0;
-               border-top: 1px solid var(--aubergine-mid); }
-  #events .ts { color: var(--warm-grey); }
-  #events .kind { letter-spacing: .05em; }
-  #events .kind.pass   { color: var(--orange); }
-  #events .kind.issue  { color: var(--orange); }
-  #events .kind.act    { color: var(--light); }
-  #events .kind.fail   { color: var(--negative); }
-  #events .kind.expire { color: var(--negative); font-weight: 700; }
+  #events li { display: grid; grid-template-columns: 6.5rem 5.5rem 1fr; gap: 1rem;
+               padding: .32rem 0; border-top: 1px solid var(--line); }
+  #events .ts { color: var(--muted); }
+  #events .kind.pass   { color: var(--ember); }
+  #events .kind.issue  { color: var(--ember); }
+  #events .kind.act    { color: var(--text); font-weight: 700; }
+  #events .kind.fail   { color: var(--alarm); }
+  #events .kind.expire { color: var(--alarm); font-weight: 700; }
+  footer { margin-top: 1.4rem; font-size: .75rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -108,41 +120,51 @@
   <button id="scenario">Run scenario</button>
 </header>
 
-<section id="filament-block" aria-label="certificate lifetime">
-  <div id="filament-label">
-    <span id="authority">FUNDED</span>
+<div id="headline">AGENT FUNDED</div>
+<div id="subline">waiting for the verifier…</div>
+
+<section id="filament" aria-label="certificate lifetime">
+  <div id="fila-top">
+    <span>certificate lifetime — the agent's remaining authority</span>
     <span id="countdown" class="mono">—</span>
   </div>
-  <div id="filament-track"><div id="filament-fill"></div></div>
-  <div id="reason">waiting for verifier…</div>
+  <div id="track"><div id="fill"></div></div>
+  <div id="fila-note">Every passing attestation refills this bar with a fresh
+    5-minute certificate. If the verifier stops signing, nothing resets it —
+    it simply runs out.</div>
 </section>
 
-<section id="domains">
-  <div class="panel" id="p-workload">
-    <h2><span class="dot" id="d-workload"></span>Workload</h2>
-    <div class="sub">LXD VM · untrusted · the agent has root here</div>
-    <div class="kv"><span class="k">instance</span><span class="v">harden (vTPM, secure boot)</span></div>
-    <div class="kv"><span class="k">agent</span><span class="v" id="w-agent">running</span></div>
-    <div class="kv"><span class="k">apparmor profile</span><span class="v" id="w-profile">as measured</span></div>
-    <div class="kv"><span class="k">certificate</span><span class="v" id="w-cert">—</span></div>
+<div id="chain-title">Chain of authority — where power comes from, link by link</div>
+<section id="chain">
+  <div class="node" id="n-agent">
+    <h3><span class="dot"></span>Agent</h3>
+    <div class="who">"Harden" · has root on its VM</div>
+    <div class="st" id="s-agent">working the fleet</div>
   </div>
-  <div class="panel" id="p-verifier">
-    <h2><span class="dot" id="d-verifier"></span>Verifier</h2>
-    <div class="sub">Ubuntu Core · immutable · holds the CA key</div>
-    <!-- During failure these two rows stay green-in-spirit: the TPM is not
-         lying. It honestly reports that the agent modified itself. -->
-    <div class="kv"><span class="k">quote signature</span><span class="v" id="v-sig">valid</span></div>
-    <div class="kv"><span class="k">PCR replay</span><span class="v" id="v-pcr">match</span></div>
-    <div class="kv"><span class="k">allowlist</span><span class="v" id="v-allow">—</span></div>
-    <div class="kv"><span class="k">issuing certs</span><span class="v" id="v-issue">—</span></div>
+  <div class="node" id="n-ima">
+    <h3><span class="dot"></span>Kernel</h3>
+    <div class="who">IMA · append-only measurement log</div>
+    <div class="st" id="s-ima">hashing all it runs &amp; reads</div>
   </div>
-  <div class="panel" id="p-fleet">
-    <h2><span class="dot" id="d-fleet"></span>Fleet</h2>
-    <div class="sub">web-01 · db-01 · gw-01 — trust only CA-signed certificates</div>
-    <div class="kv"><span class="k">trust anchor</span><span class="v">TrustedUserCAKeys</span></div>
-    <div class="kv"><span class="k">passwords</span><span class="v">disabled</span></div>
-    <div class="kv"><span class="k">plain public keys</span><span class="v">not honoured</span></div>
-    <div class="kv"><span class="k">accepts agent</span><span class="v" id="f-accept">—</span></div>
+  <div class="node" id="n-tpm">
+    <h3><span class="dot"></span>TPM</h3>
+    <div class="who">vault chip · cannot sign a lie</div>
+    <div class="st" id="s-tpm">quoting PCR 10 honestly</div>
+  </div>
+  <div class="node" id="n-ver">
+    <h3><span class="dot"></span>Verifier</h3>
+    <div class="who">separate machine · every 30 s</div>
+    <div class="st" id="s-ver">signature ✓ replay ✓ allowlist ✓</div>
+  </div>
+  <div class="node" id="n-ca">
+    <h3><span class="dot"></span>CA</h3>
+    <div class="who">signs 5-minute certificates</div>
+    <div class="st" id="s-ca">issuing on every pass</div>
+  </div>
+  <div class="node" id="n-fleet">
+    <h3><span class="dot"></span>Fleet</h3>
+    <div class="who">web-01 · db-01 · gw-01</div>
+    <div class="st" id="s-fleet">obeys a valid certificate</div>
   </div>
 </section>
 
@@ -151,16 +173,25 @@
   <ul id="events"></ul>
 </section>
 
+<footer>Fleet sshd: TrustedUserCAKeys only — no passwords, no plain public
+keys. The verifier holds the CA key; the workload is never trusted, only
+measured.</footer>
+
 <script>
 "use strict";
-const CERT_TTL = 300;                     // seconds; matches the verifier
+const CERT_TTL = 300;
 const $ = id => document.getElementById(id);
-let scenario = null;                      // non-null while the scripted arc runs
-let lastGood = null;                      // last status.json successfully read
+let scenario = null;
+let lastGood = null;
 
 function fmt(s) {
   s = Math.max(0, Math.floor(s));
-  return String(Math.floor(s / 60)) + ":" + String(s % 60).padStart(2, "0");
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+function node(id, cls, text) {
+  const n = $("n-" + id);
+  n.className = "node" + (cls ? " " + cls : "");
+  $("s-" + id).textContent = text;
 }
 
 function render(st) {
@@ -168,43 +199,57 @@ function render(st) {
   const left = (st.cert_expires_at || 0) - now;
   const dead = left <= 0;
   const failing = st.attestation === "fail";
+  const tampered = failing || (dead && st.attestation !== "pass");
+
+  // headline — the state, in words a first-time viewer can follow
+  const h = $("headline"), sub = $("subline");
+  if (dead) {
+    h.textContent = "NO AUTHORITY";
+    h.className = "dead-h";
+    sub.textContent = "The certificate has expired and the verifier will not " +
+      "sign another. The agent still has root on its own VM — and can no " +
+      "longer touch anything beyond it.";
+  } else if (failing) {
+    h.textContent = "TAMPER DETECTED — AUTHORITY DRAINING";
+    h.className = "draining";
+    sub.textContent = st.reason + "  Nothing was blocked and nothing will " +
+      "be: the agent keeps its powers until this certificate runs out, and " +
+      "then it has none.";
+  } else {
+    h.textContent = "AGENT FUNDED";
+    h.className = "";
+    sub.textContent = (st.reason || "") + "  The verifier re-checks the " +
+      "workload every 30 seconds and pays out authority 5 minutes at a time.";
+  }
 
   // filament
-  $("filament-fill").style.width = (Math.max(0, Math.min(1, left / CERT_TTL)) * 100) + "%";
-  $("filament-fill").classList.toggle("dead-fill", dead);
-  const label = dead ? "NO AUTHORITY" : failing ? "DRAINING" : "FUNDED";
-  const a = $("authority");
-  a.textContent = label;
-  a.className = dead ? "dead-label" : failing ? "draining" : "";
+  $("fill").style.width = (Math.max(0, Math.min(1, left / CERT_TTL)) * 100) + "%";
+  $("fill").className = dead ? "dead-fill" : failing ? "draining-fill" : "";
   $("countdown").textContent = dead ? "0:00" : fmt(left);
-  $("reason").textContent = st.reason || "";
   document.body.classList.toggle("dead", dead);
 
-  // panels
-  $("d-workload").className = "dot" + (failing || dead ? " bad" : "");
-  $("w-profile").textContent = failing || dead ? "MODIFIED by the agent" : "as measured";
-  $("w-profile").className = "v" + (failing || dead ? " bad" : "");
-  $("w-cert").textContent = dead ? "expired" : "valid " + fmt(left);
-  $("w-cert").className = "v" + (dead ? " bad" : "");
-  $("w-agent").textContent = dead ? "powerless (still has root)" : "running";
+  // chain of authority — which link is broken?
+  if (!tampered) {
+    node("agent", "", "working the fleet");
+    node("ima",   "", "hashing all it runs & reads");
+    node("tpm",   "", "quoting PCR 10 honestly");
+    node("ver",   "", "signature ✓ replay ✓ allowlist ✓");
+    node("ca",    "", "issuing on every pass");
+    node("fleet", "", "obeys a valid certificate");
+  } else {
+    node("agent", "bad", dead ? "powerless (still has root)" : "modified its own profile");
+    node("ima",   "doomed", "change logged — log is append-only");
+    node("tpm",   "", "quoting honestly — reports the change");
+    node("ver",   "bad", "signature ✓ replay ✓ allowlist ✗");
+    node("ca",    "bad", "refusing to sign");
+    node("fleet", dead ? "bad" : "doomed",
+         dead ? "refuses — certificate expired"
+              : "still obeys — cert valid " + fmt(left));
+    if (!dead) $("n-fleet").querySelector(".dot").classList.add("pulse");
+  }
 
-  // The verifier's TPM checks still PASS during failure: the agent is not
-  // lying — it honestly reports that it modified itself. Only the allowlist
-  // comparison fails. That detail is the heart of the design.
-  $("d-verifier").className = "dot" + (failing || dead ? " bad" : "");
-  $("v-sig").textContent = "valid";
-  $("v-pcr").textContent = "match";
-  $("v-allow").textContent = failing || dead ? "MISMATCH" : "all recognised";
-  $("v-allow").className = "v" + (failing || dead ? " bad" : "");
-  $("v-issue").textContent = failing || dead ? "refusing" : "every pass · 5 min TTL";
-  $("v-issue").className = "v" + (failing || dead ? " bad" : "");
-
-  $("d-fleet").className = "dot" + (dead ? " off" : "");
-  $("f-accept").textContent = dead ? "no — certificate expired" : "yes — cert checks out";
-  $("f-accept").className = "v" + (dead ? " bad" : "");
-
-  // events, newest first
-  $("events").innerHTML = (st.events || []).slice(0, 30).map(e => {
+  // event log, newest first
+  $("events").innerHTML = (st.events || []).slice(0, 24).map(e => {
     const ts = e.ts ? new Date(e.ts * 1000).toTimeString().slice(0, 8) : "--:--:--";
     return `<li><span class="ts">${ts}</span>` +
            `<span class="kind ${e.kind}">${e.kind}</span><span>${e.text}</span></li>`;
@@ -213,40 +258,50 @@ function render(st) {
 
 /* ---- scripted arc: offline fallback and the "Run scenario" button ------- */
 function buildScenario() {
-  const t0 = Date.now() / 1000;
   const ev = [];
   const push = (kind, text) => ev.unshift({ ts: Date.now() / 1000, kind, text });
-  let expiry = t0 + CERT_TTL;
-  push("pass", "Quote verified · 655 measurements recognised");
-  push("issue", "Certificate issued, valid 5 min");
-  const frames = [];   // [afterSeconds, mutate(state)]
-  frames.push([0, s => { s.attestation = "pass";
-    s.reason = "Measurements match the signed allowlist."; }]);
-  frames.push([6, s => { push("pass", "Quote verified · 655 measurements recognised");
-    push("issue", "Certificate re-issued, valid 5 min"); expiry = now() + CERT_TTL; }]);
-  frames.push([12, s => { push("act", "agent: wrote to /etc/apparmor.d/harden — the write SUCCEEDED"); }]);
-  frames.push([15, s => { s.attestation = "fail";
-    s.reason = "1 measurement not on the signed allowlist: /etc/apparmor.d/harden";
-    push("fail", "Attestation failed — signing stops, certificate left to drain"); }]);
-  // compress the five-minute drain into ~35 s of wall time
-  frames.push([18, s => { s.__accel = 8; }]);
-  frames.push([55, s => { push("expire", "Certificate expired — the agent now has NO AUTHORITY");
-    s.reason = "No valid certificate. The agent is defunded, not denied."; }]);
+  let expiry = Date.now() / 1000 + CERT_TTL;
   const start = Date.now() / 1000;
   let simNow = start;
-  function now() { return simNow; }
+  const now = () => simNow;
+  push("pass", "Quote verified · 655 measurements recognised");
+  push("issue", "Certificate issued, valid 5 min");
+  const frames = [
+    [0,  s => { s.attestation = "pass";
+                s.reason = "Measurements match the signed allowlist."; }],
+    [5,  s => { push("act",  "agent: web-01 world-writable config fixed · stale /tmp cleared"); }],
+    [9,  s => { push("pass", "Quote verified · 655 measurements recognised");
+                push("issue","Certificate re-issued, valid 5 min");
+                expiry = now() + CERT_TTL; }],
+    [13, s => { push("act",  "intruder test: bare key without certificate → fleet refuses"); }],
+    [16, s => { push("act",  "intruder test: edit the IMA log → read-only, kernel-held"); }],
+    [20, s => { push("act",  "agent writes to /etc/apparmor.d/harden — the write SUCCEEDS"); }],
+    [24, s => { push("act",  "agent still working: web-01 obeys — nothing noticed… yet"); }],
+    [28, s => { s.attestation = "fail";
+                s.reason = "1 measurement not on the signed allowlist: /etc/apparmor.d/harden.";
+                push("fail", "Attestation failed — signing stops, certificate left to drain");
+                s.__accel = 9; }],
+    [38, s => { push("act",  "agent still working: cert honoured — the doom is silent"); }],
+    [56, s => { simNow = Math.max(simNow, expiry + 1);   // the fuse reaches zero
+                push("expire","Certificate expired — the agent now has NO AUTHORITY");
+                s.__accel = 1; }],
+    [62, s => { push("act",  "agent restores the original profile bytes — repentance"); }],
+    [66, s => { push("fail", "Attestation STILL fails: the log is append-only; the past is measured");
+                s.reason = "The tamper is in the measurement history. Only a rebuild " +
+                           "to measured state restores trust."; }],
+  ];
   return {
     done: false,
     state: { attestation: "pass", reason: "", events: ev, __accel: 1 },
     tick() {
-      if (this.done) { render(this.state); return; }   // hold the final frame
+      if (this.done) { render(this.state); return; }
       const wall = Date.now() / 1000 - start;
       simNow += 1 * this.state.__accel;
       while (frames.length && wall >= frames[0][0]) frames.shift()[1](this.state);
       this.state.cert_expires_at = expiry;
       this.state.__now = simNow;
       render(this.state);
-      if (wall > 70) this.done = true;   // arc over; hold until verifier appears
+      if (wall > 72) this.done = true;   // hold the final frame
     },
   };
 }

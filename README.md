@@ -102,19 +102,31 @@ simply stops refilling, and your lamp dies mid-shift.
 | **Verifier** (`verifier/verifier.py`) | a program on the other side of the wall. Every 30 seconds it demands a fresh quote, checks it against the **allowlist** (a signed inventory of every fingerprint that *should* be there), and — only if everything matches — signs a **certificate**: a permission slip for the agent that expires after five minutes |
 | **The fleet** (`web-01`, `db-01`, `gw-01`) | three servers that know nothing about any of this. They accept exactly one thing: a currently-valid certificate signed by the verifier. No passwords, no permanent keys |
 
-**The demonstration.** `make demo` shows the agent working normally — then
-has it append one line to its own AppArmor profile. Nothing objects; the
-write succeeds; no alarm sounds. But the file's fingerprint changed, so the
-stenographer logs it, the vault chip's summary diverges from the allowlist,
-and the verifier's next check fails. It doesn't kill anything or raise an
-alert. It just *stops signing*. The permission slip already in the agent's
-pocket keeps working for its remaining minutes — you literally watch it drain
-as an orange bar on the console — and then every server refuses the agent,
-and there is no way for it to earn a new slip short of being restored to its
-certified state (`make reset`).
+**The demonstration.** `make demo` plays out in eight acts, and the point
+arrives from an unexpected direction:
 
-One detail worth savouring on the console during the failure: the quote
-signature is still *valid* and the fingerprint replay still *matches*. The
+1. Real problems are planted on the fleet, and the agent — funded with a
+   fresh certificate — visibly *fixes* them. There's something to lose.
+2. The obvious attacks are tried first, and all fail: a stolen key without a
+   certificate gets refused by every server; rewriting the measurement log
+   is impossible even for the admin account, because the kernel holds it
+   append-only.
+3. Then the real move: the agent rewrites its own AppArmor rulebook. **The
+   write succeeds.** No error, no alarm — and the agent *keeps working*,
+   apparently having gotten away with it.
+4. Thirty seconds later the verifier's routine check fails — and does the
+   only thing it ever does: it stops signing. The agent's current permission
+   slip keeps working while its remaining minutes drain away on the console,
+   the agent still operating on borrowed time, until the second it expires
+   and every server refuses it at once.
+5. The actual climax: the agent puts the original file back, byte for byte —
+   and attestation **still fails.** The log is append-only; the tampering is
+   in the measured *history*, not just the current files. There is no
+   repentance. Trust returns only by rebuilding to a certified state
+   (`make reset`).
+
+One detail worth savouring during the failure: the console keeps showing the
+quote signature as *valid* and the fingerprint replay as *matching*. The
 agent isn't lying about what it did — it can't. The system's core and the
 vault chip report over its head. The check fails precisely because the
 reporting stays honest.
@@ -194,13 +206,19 @@ again), `cd` into the project folder in both, then:
 
 ```sh
 make console        # terminal 1 — then open http://localhost:9000 in a browser
-make demo           # terminal 2 — the narrated demonstration (~6 minutes)
+make demo           # terminal 2 — the narrated demonstration (~8 minutes)
 ```
 
-The console shows an orange bar — the agent's remaining certificate time —
-refilling on every passing check. `make demo` walks through the acts: agent
-works, agent tampers with itself, check fails, bar drains, page goes dark,
-fleet refuses. Run `make demo` again any time; it resets the stage first.
+The console reads top to bottom: a headline that says the current state in
+plain words, the orange bar of remaining certificate time (refilled on every
+passing check, never reset on a failing one), a six-link **chain of
+authority** — agent → kernel → TPM → verifier → CA → fleet — that shows
+exactly which link breaks and which links keep honestly working, and a live
+event log that the demo narrates into. When authority hits zero the whole
+page visibly loses power. `make demo` runs the eight acts described above;
+run it again any time — it resets the stage first. (No demo running? The
+console plays a scripted version of the arc on its own, and the
+"Run scenario" button replays it — useful for rehearsing.)
 
 **4. Clean up whenever you like:**
 
