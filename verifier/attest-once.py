@@ -242,7 +242,10 @@ def stage6_allowlist(report):
         # every boot or login by design. Their hash is unpredictable, so it is
         # the path that is excused — and only paths proven to move across
         # identical runs at baseline time, never the agent's own constraint.
-        if path in volatile:
+        # Entries may also be glob patterns for directories whose FILE NAMES
+        # are generated at run time (bug #30); is_volatile refuses to excuse a
+        # protected path however the list is worded.
+        if imalog.is_volatile(path, volatile):
             skipped += 1
             continue
         offenders.append(f"{fhash[:16]}…  {path}")
