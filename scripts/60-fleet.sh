@@ -10,8 +10,8 @@
 #   - the `harden` user must exist on each fleet host
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 need lxc "lxd (snap)"
 lxc network show "$AAA_NET" >/dev/null 2>&1 || die "network $AAA_NET missing" \

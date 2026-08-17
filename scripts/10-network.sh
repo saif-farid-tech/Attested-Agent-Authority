@@ -7,7 +7,7 @@
 # address is pinned in 20-workload.sh via a NIC device override.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
+. scripts/lib/common.sh
 guard_host
 need lxc "lxd (snap)"
 

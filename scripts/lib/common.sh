@@ -6,6 +6,17 @@
 # instance. If work must happen inside a VM or container, the script reaches
 # in with `lxc exec` — the user never types a command in a guest shell.
 
+# Bash only (bug #29). Every script sources this with `.` (POSIX) rather than
+# `source` so that running one with `sh scripts/…` reaches this guard instead
+# of collapsing into a pile of "source: not found" and "Bad substitution" —
+# which is what it looked like when someone reasonably tried `sh` after a
+# script appeared to hang.
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "fail  this project's scripts are bash, not sh" >&2
+  echo "      fix: bash $0    (or just: make <target>)" >&2
+  exit 1
+fi
+
 set -euo pipefail
 
 # ---------------------------------------------------------------- project map
@@ -139,26 +150,67 @@ wait_vm_ready() {  # wait for the LXD agent inside the VM to answer
       "lxc console $AAA_VM  # watch the boot, then re-run this script"
 }
 
+# AAA_SETTLED_PROBE — the readiness test, run INSIDE the guest by
+# `lxc exec … -- sh -c "$AAA_SETTLED_PROBE"`. Dash-compatible, no single
+# quotes. It always PRINTS what it saw ("sshd=yes ima=2043") and exits 0 only
+# when the VM is genuinely usable, so a timeout can report the truth instead
+# of guessing between two causes.
+#
+# bug #27: this used to be `systemctl is-active ssh || systemctl is-active
+# sshd`. On Ubuntu 22.10 and later — the demo VM is 24.04 — sshd is SOCKET
+# ACTIVATED: ssh.socket holds port 22 and ssh.service stays "inactive" until a
+# connection arrives, so that test was false on a perfectly healthy machine
+# and every cold boot ended in "came up but never settled". Ask the question
+# that actually matters: is anything listening on port 22?
+#
+# The two file paths it reads are overridable (AAA_IMA_LOG, AAA_PROC_NET_TCP)
+# for one reason: tests/test_vm_probe.sh runs this exact string against stub
+# files, so the check that gates every build is itself checked by 'make
+# selftest' — on any machine, with no LXD and no VM.
+AAA_SETTLED_PROBE='
+sshd=no
+for u in ssh.socket sshd.socket ssh.service sshd.service; do
+  if systemctl is-active --quiet "$u" 2>/dev/null; then sshd=yes; break; fi
+done
+if [ "$sshd" = no ]; then
+  if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -qE "[:.]22[[:space:]]"; then
+    sshd=yes
+  elif grep -qiE ":0016 [0-9A-F]+:[0-9A-F]+ 0A" ${AAA_PROC_NET_TCP:-/proc/net/tcp /proc/net/tcp6} 2>/dev/null; then
+    sshd=yes
+  fi
+fi
+ima=$(wc -l < "${AAA_IMA_LOG:-/sys/kernel/security/ima/ascii_runtime_measurements}" 2>/dev/null || echo 0)
+ima=$(printf %s "$ima" | tr -dc 0-9)
+[ -n "$ima" ] || ima=0
+echo "sshd=$sshd ima=$ima"
+[ "$sshd" = yes ] || exit 1
+[ "$ima" -gt 10 ] || exit 1
+exit 0
+'
+
+# vm_settled_state — what the probe currently sees, for diagnostics. Never fails.
+vm_settled_state() {
+  lxc exec "$AAA_VM" -- sh -c "$AAA_SETTLED_PROBE" 2>/dev/null || true
+}
+
 # wait_vm_settled — the LXD agent answering is NOT the same as the VM being
 # usable. Attestation needs sshd listening and the IMA policy loaded; asking
 # for those a few seconds too early is the difference between "the demo works"
 # and "the demo works on the second try" (bug #17).
 wait_vm_settled() {
   wait_vm_ready
-  local tries=${1:-90}
+  local tries=${1:-90} state=""
   for _ in $(seq 1 "$tries"); do
-    if lxc exec "$AAA_VM" -- sh -c '
-         (systemctl is-active ssh >/dev/null 2>&1 ||
-          systemctl is-active sshd >/dev/null 2>&1) &&
-         [ "$(wc -l < /sys/kernel/security/ima/ascii_runtime_measurements)" -gt 10 ]
-       ' >/dev/null 2>&1; then
+    if state=$(lxc exec "$AAA_VM" -- sh -c "$AAA_SETTLED_PROBE" 2>/dev/null); then
       return 0
     fi
     sleep 2
   done
-  die "VM '$AAA_VM' came up but never settled" \
-      "sshd is not listening, or the IMA policy did not load at boot" \
-      "make doctor   # names the failing piece"
+  # Say which half is missing. "sshd=no" means nothing is listening on port 22;
+  # "ima=0" (or a handful) means the policy did not load at boot.
+  die "VM '$AAA_VM' came up but never settled (saw: ${state:-no answer from the guest})" \
+      "it needs something listening on port 22 (ssh.socket counts) AND a populated IMA log" \
+      "make doctor   # runs the same probe and names the failing piece"
 }
 
 # cold_boot_vm — a real power cycle, not a warm restart. The IMA measurement
@@ -188,6 +240,19 @@ ensure_fleet_up() {
     [ -n "$ready" ] || die "fleet host $host did not become ready" \
         "the container is not answering" "lxc start $host && lxc info $host"
   done
+}
+
+# verifier_pids — the PIDs of live verifier.py processes, one per line.
+#
+# bug #28: `pgrep -f verifier/verifier.py` counted the same verifier twice.
+# `make console` runs its recipe through `bash -c "… python3
+# verifier/verifier.py & …"`, so the RECIPE SHELL's command line contains the
+# pattern as well, and doctor reported "2 verifiers running — kill all but
+# one" on a perfectly healthy machine (the verifier's PID lock, bug #22, makes
+# a genuine second one impossible in the first place). Anchor the match at
+# argv[0] so only the python process itself counts.
+verifier_pids() {
+  pgrep -f '^([^ ]*/)?python[0-9.]*( +-[^ ]+)* +[^ ]*verifier/verifier\.py' 2>/dev/null || true
 }
 
 # clear_console_events — drop narration left over from an earlier run. Without

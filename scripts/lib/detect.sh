@@ -12,9 +12,29 @@ detect_host_tpm() {   # exits 0 if a real TPM char device is present
   [ -c /dev/tpm0 ] || [ -c /dev/tpmrm0 ]
 }
 
-detect_lxd_ext() {    # detect_lxd_ext EXTENSION — is an LXD API extension present?
-  lxc_says "\"$1\"" query /1.0
+# detect_lxd_ext EXT [EXT…] — is ANY of these LXD API extensions present?
+#
+# The names are matched exactly, quotes included, against the api_extensions
+# array in GET /1.0. Exactness is the whole point of bug #26: the vTPM
+# extension is called `tpm_device_type`, and preflight asked for
+# `"tpm_device"` — a name no LXD has ever published. The check therefore
+# failed on every machine, on every version, forever, and since preflight
+# gates `make build` the documented way in was permanently shut. A vTPM the
+# script then went on to attach successfully.
+detect_lxd_ext() {
+  local json want
+  json=$(lxc query /1.0 2>/dev/null) || return 1
+  [ -n "$json" ] || return 1
+  for want in "$@"; do
+    case "$json" in *"\"$want\""*) return 0 ;; esac
+  done
+  return 1
 }
+
+# detect_lxd_vtpm — can this LXD attach a vTPM? `tpm_device_type` is the
+# published name; the second is accepted only so a future rename cannot lock
+# the build out again the way the first one did.
+detect_lxd_vtpm() { detect_lxd_ext tpm_device_type tpm_device; }
 
 detect_free_ram_mb() { awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo; }
 

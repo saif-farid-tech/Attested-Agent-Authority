@@ -6,7 +6,7 @@
 # ~/salvage/ — those are the user's personal keys and rescued data.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
+. scripts/lib/common.sh
 guard_host
 
 removed=(); absent=()

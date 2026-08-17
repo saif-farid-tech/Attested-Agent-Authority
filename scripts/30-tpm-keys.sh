@@ -8,8 +8,8 @@
 # HOST verifying a quote produced INSIDE the VM. Everything after is plumbing.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 need lxc "lxd (snap)"
 need tpm2_checkquote tpm2-tools

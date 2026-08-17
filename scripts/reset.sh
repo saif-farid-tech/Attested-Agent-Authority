@@ -6,7 +6,7 @@
 # so the next attestation passes and the verifier starts signing again.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
+. scripts/lib/common.sh
 guard_host
 need lxc "lxd (snap)"
 instance_exists "$AAA_VM" || die "VM $AAA_VM missing" \

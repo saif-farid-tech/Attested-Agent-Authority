@@ -4,8 +4,8 @@
 # Prerequisites: 40-apparmor.sh (profile loaded; it names the agent's path).
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 need lxc "lxd (snap)"
 require_script agent/agent.py "the repository checkout (agent/agent.py)"

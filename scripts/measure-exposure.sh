@@ -9,7 +9,7 @@
 # Usage: scripts/measure-exposure.sh [RUNS] [OUT.csv]
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
+. scripts/lib/common.sh
 guard_host
 need lxc "lxd (snap)"
 

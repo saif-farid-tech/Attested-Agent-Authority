@@ -11,8 +11,8 @@
 # The demo depends on that write succeeding.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 need lxc "lxd (snap)"
 instance_exists "$AAA_VM" || die "VM $AAA_VM missing" \
