@@ -13,6 +13,7 @@ stale timestamp is what makes the console's filament drain in real time
 instead of resetting. The agent is never revoked — it is defunded.
 """
 
+import atexit
 import importlib.util
 import json
 import os
@@ -63,12 +64,42 @@ def issue_certificate() -> float:
     return time.time() + CERT_SECONDS
 
 
-def load_status() -> dict:
+def fresh_status() -> dict:
+    """A new verifier process starts from a blank slate.
+
+    It used to resume whatever status.json held, which meant a second run
+    inherited the previous one's events and — worse — its cert_expires_at.
+    The console then opened on a filament draining from a certificate that no
+    longer existed, narrating a run that had already finished. This verifier
+    has funded nothing yet, and says so (bug #18)."""
+    return {"attestation": "unknown",
+            "reason": "verifier starting — no attestation cycle has run yet",
+            "cert_expires_at": 0.0, "cert_ttl": CERT_SECONDS, "events": []}
+
+
+def acquire_lock() -> None:
+    """Refuse to start when another verifier is already live.
+
+    Two verifiers race on status.json and both push certificates, so the
+    console flickers between their views and the certificate lifetime becomes
+    unpredictable — 'make console' plus a demo that started its own was enough
+    to do it (bug #22). A stale lock file from a killed process is ignored."""
+    lock = STATE / "verifier.pid"
     try:
-        return json.loads(STATUS.read_text())
+        other = int(lock.read_text().strip())
     except (FileNotFoundError, ValueError):
-        return {"attestation": "unknown", "reason": "verifier starting",
-                "cert_expires_at": 0.0, "events": []}
+        other = 0
+    if other and other != os.getpid():
+        try:
+            os.kill(other, 0)
+        except OSError:
+            pass          # the pid is gone; the lock is stale, take it
+        else:
+            sys.exit(f"verifier: another verifier is already running (pid {other}).\n"
+                     f"          stop it first, or remove {lock} if it is stale.")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(f"{os.getpid()}\n")
+    atexit.register(lambda: lock.unlink(missing_ok=True))
 
 
 def write_status(status: dict) -> None:
@@ -105,11 +136,11 @@ def ingest_dropbox(status: dict) -> bool:
 
 def main() -> int:
     STATUS.parent.mkdir(parents=True, exist_ok=True)
-    status = load_status()
-    status["cert_ttl"] = CERT_SECONDS   # so the console scales the filament to any TTL
+    acquire_lock()
+    status = fresh_status()
     add_event(status, "issue", f"verifier online, attesting every {INTERVAL}s")
     write_status(status)
-    was_funded = status.get("cert_expires_at", 0) > time.time()
+    was_funded = False
     next_attest = 0.0
 
     while True:

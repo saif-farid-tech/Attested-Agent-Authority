@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""End-to-end test of the restart path, without LXD or a TPM.
+
+Reproduces the failure the demo actually hit — 'make demo' works once, then
+refuses to restart — by replaying measurement logs through the REAL
+stage6_allowlist() from attest-once.py.
+
+  python3 tests/test_restart_scenario.py
+"""
+
+import importlib.util
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+VERIFIER = REPO / "verifier"
+
+STATE = Path(tempfile.mkdtemp(prefix="aaa-restart-test-"))
+os.environ["AAA_STATE"] = str(STATE)
+
+_spec = importlib.util.spec_from_file_location("attest_once", VERIFIER / "attest-once.py")
+attest_once = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(attest_once)
+
+
+def entry(fhash: str, path: str) -> str:
+    return f"10 {'0' * 40} ima-ng sha256:{fhash} {path}"
+
+
+def boot_log(seed: str, lastlog: str, profile: str = "profile-clean") -> str:
+    """A plausible IMA log for one boot of the workload VM.
+
+    The interesting rows are the two that legitimately move: systemd rewrites
+    its random seed every boot, and sshd updates lastlog on every login the
+    verifier makes. Everything else is stable.
+    """
+    return "\n".join([
+        entry("aggregate", "boot_aggregate"),
+        entry("sshbin", "/usr/bin/ssh"),
+        entry("python", "/usr/bin/python3.14"),
+        entry("agentpy", "/var/lib/harden/agent.py"),
+        entry("cfg", "/var/lib/harden/config.json"),
+        entry("hosts", "/etc/hosts"),
+        entry(profile, "/etc/apparmor.d/harden"),
+        entry(seed, "/var/lib/systemd/random-seed"),
+        entry(lastlog, "/var/log/lastlog"),
+    ]) + "\n"
+
+
+def build_baseline(logs: list[str]) -> None:
+    """What 70-baseline.sh does: freeze an allowlist and calibrate volatiles."""
+    paths = []
+    for i, text in enumerate(logs):
+        p = STATE / f"cal-{i}.log"
+        p.write_text(text)
+        paths.append(str(p))
+    for mode, out in (("allowlist", "allowlist.txt"), ("volatile", "volatile-paths.txt")):
+        r = subprocess.run([sys.executable, str(VERIFIER / "imalog.py"), mode,
+                            str(STATE / out), *paths],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+
+def check(log_text: str):
+    """Run the real stage 6 against a workload presenting this log."""
+    attest_once.ssh = lambda *a, **k: log_text
+    return attest_once.stage6_allowlist(lambda _msg: None)
+
+
+CASES = []
+
+
+def case(fn):
+    CASES.append(fn)
+    return fn
+
+
+# Baseline calibration: two cold boots + two attestations, exactly as
+# 70-baseline.sh captures them. The seed and lastlog differ between runs.
+BASELINE = [
+    boot_log("seed-a", "lastlog-1"),
+    boot_log("seed-b", "lastlog-2"),
+    boot_log("seed-b", "lastlog-3"),
+    boot_log("seed-b", "lastlog-4"),
+]
+
+
+@case
+def test_calibration_marks_only_the_genuinely_volatile_paths():
+    build_baseline(BASELINE)
+    volatile = {l for l in (STATE / "volatile-paths.txt").read_text().splitlines()
+                if l and not l.startswith("#")}
+    assert "/var/lib/systemd/random-seed" in volatile, volatile
+    assert "/var/log/lastlog" in volatile, volatile
+    assert "/etc/apparmor.d/harden" not in volatile, volatile
+    assert "/var/lib/harden/agent.py" not in volatile, volatile
+
+
+@case
+def test_regression_the_old_single_boot_baseline_fails_to_restart():
+    """The bug, reproduced. The previous baseline froze the allowlist from one
+    warm boot and had no notion of volatile paths, so the very next cold boot
+    presented a random seed and a lastlog nobody had ever measured. Two
+    unrecognised measurements, attestation refused, the verifier never funded
+    the agent again — 'make demo' hung in ACT 2 waiting for a certificate that
+    was never coming."""
+    build_baseline([BASELINE[0]])
+    (STATE / "volatile-paths.txt").write_text("")     # what the old code had
+    try:
+        check(boot_log("seed-NEW", "lastlog-NEW"))
+    except attest_once.StageFailure as e:
+        assert e.code == attest_once.ATTEST_FAIL
+        assert "/var/lib/systemd/random-seed" in e.what, e.what
+    else:
+        raise AssertionError("expected the un-calibrated baseline to fail")
+
+
+@case
+def test_a_restart_with_a_brand_new_random_seed_still_passes():
+    # THE BUG: a cold boot writes a seed and a lastlog nobody has ever seen.
+    # Before the calibration these were two unrecognised measurements and the
+    # verifier stopped funding the agent, so 'make demo' hung in ACT 2.
+    build_baseline(BASELINE)
+    msg = check(boot_log("seed-NEVER-SEEN", "lastlog-NEVER-SEEN"))
+    assert "every measurement recognised" in msg, msg
+    assert "2 volatile-path measurement(s) excused" in msg, msg
+
+
+@case
+def test_ten_consecutive_restarts_all_pass():
+    build_baseline(BASELINE)
+    for i in range(10):
+        check(boot_log(f"seed-{i}", f"lastlog-{i}"))
+
+
+@case
+def test_the_tamper_still_fails_attestation():
+    # The whole point of the project: excusing volatile paths must not excuse
+    # the agent rewriting its own constraint.
+    build_baseline(BASELINE)
+    try:
+        check(boot_log("seed-x", "lastlog-x", profile="profile-TAMPERED"))
+    except attest_once.StageFailure as e:
+        assert e.code == attest_once.ATTEST_FAIL, e.code
+        assert "/etc/apparmor.d/harden" in e.what, e.what
+    else:
+        raise AssertionError("the tamper was not detected — the demo is a lie")
+
+
+@case
+def test_editing_the_agent_still_fails_attestation():
+    # bug #10 must survive the calibration too.
+    build_baseline(BASELINE)
+    tampered = boot_log("seed-y", "lastlog-y").replace(
+        "sha256:agentpy /var/lib/harden/agent.py",
+        "sha256:agentpy-EDITED /var/lib/harden/agent.py")
+    try:
+        check(tampered)
+    except attest_once.StageFailure as e:
+        assert e.code == attest_once.ATTEST_FAIL
+        assert "/var/lib/harden/agent.py" in e.what, e.what
+    else:
+        raise AssertionError("an edited agent passed attestation")
+
+
+@case
+def test_an_unknown_new_file_still_fails_attestation():
+    build_baseline(BASELINE)
+    intruder = boot_log("seed-z", "lastlog-z") + entry("evil", "/usr/local/bin/backdoor") + "\n"
+    try:
+        check(intruder)
+    except attest_once.StageFailure as e:
+        assert e.code == attest_once.ATTEST_FAIL
+        assert "/usr/local/bin/backdoor" in e.what, e.what
+    else:
+        raise AssertionError("an unmeasured binary passed attestation")
+
+
+# ---- the signed-allowlist check (bug #25) ---------------------------------
+# The project's claim is that measurements are compared against a SIGNED
+# inventory. Nothing verified that signature until now, so these cover it.
+
+class _Result:
+    def __init__(self, rc): self.returncode, self.stderr, self.stdout = rc, "", ""
+
+
+@case
+def test_an_unsigned_allowlist_is_a_setup_failure_not_a_verdict():
+    build_baseline(BASELINE)
+    (STATE / "allowlist.txt.asc").unlink(missing_ok=True)
+    try:
+        attest_once.verify_signature(STATE / "allowlist.txt")
+    except attest_once.StageFailure as e:
+        # SETUP_FAIL, not ATTEST_FAIL: a broken verifier is not a verdict
+        # about the workload, and must never be reported as one.
+        assert e.code == attest_once.SETUP_FAIL, e.code
+        assert "rebaseline" in e.remedy
+    else:
+        raise AssertionError("an unsigned allowlist was accepted")
+
+
+@case
+def test_an_allowlist_edited_after_signing_is_rejected():
+    build_baseline(BASELINE)
+    (STATE / "allowlist.txt.asc").write_text("-----BEGIN PGP SIGNATURE-----\n")
+    real_run = attest_once.subprocess.run
+    attest_once.subprocess.run = lambda *a, **k: _Result(1)   # gpg says "bad"
+    try:
+        attest_once.verify_signature(STATE / "allowlist.txt")
+    except attest_once.StageFailure as e:
+        assert e.code == attest_once.SETUP_FAIL
+        assert "does not match its signature" in e.what
+    else:
+        raise AssertionError("a forged allowlist was accepted")
+    finally:
+        attest_once.subprocess.run = real_run
+
+
+@case
+def test_a_good_signature_passes():
+    build_baseline(BASELINE)
+    (STATE / "allowlist.txt.asc").write_text("-----BEGIN PGP SIGNATURE-----\n")
+    real_run = attest_once.subprocess.run
+    attest_once.subprocess.run = lambda *a, **k: _Result(0)   # gpg says "good"
+    try:
+        attest_once.verify_signature(STATE / "allowlist.txt")   # must not raise
+    finally:
+        attest_once.subprocess.run = real_run
+
+
+def main() -> int:
+    failed = 0
+    for fn in CASES:
+        try:
+            fn()
+        except AssertionError as exc:
+            failed += 1
+            print(f"FAIL  {fn.__name__}: {exc}")
+        else:
+            print(f"ok    {fn.__name__}")
+    print(f"\n{len(CASES) - failed}/{len(CASES)} passed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

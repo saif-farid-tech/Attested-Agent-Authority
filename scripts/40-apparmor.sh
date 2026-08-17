@@ -60,14 +60,29 @@ profile harden /var/lib/harden/agent.py {
 }
 EOF
 
-vm_push "$tmp_profile" /etc/apparmor.d/harden
+# bug #20: AppArmor only ever RESTRICTS — it cannot grant what the ordinary
+# file permissions deny. `lxc file push` preserves the mktemp source mode, so
+# the profile used to land 0600 owned by whoever ran the build, and the
+# unprivileged `harden` user could not write it no matter what the profile
+# said. The tamper then failed with "DENIED", the demo aborted mid-act, and
+# the one thing the whole project exists to show never happened. The agent's
+# own constraint is owned by the agent: that IS the loaded gun on the mantel.
+vm_push "$tmp_profile" /etc/apparmor.d/harden 0644 harden:harden
 rm -f "$tmp_profile"
 vm_exec apparmor_parser -r /etc/apparmor.d/harden
-ok "profile installed and loaded"
+ok "profile installed (0644 harden:harden — deliberately writable) and loaded"
 
 # ---- verify outcome --------------------------------------------------------
 vm_exec sh -c 'aa-status 2>/dev/null | grep -q harden' || \
   die "profile 'harden' not in aa-status output" \
       "apparmor_parser loaded nothing" \
       "lxc exec $AAA_VM -- apparmor_parser -r /etc/apparmor.d/harden  # read the error"
-ok "profile 'harden' active in the VM — next: scripts/50-agent.sh"
+
+# Assert the premise of the demonstration rather than assuming it: if the
+# agent cannot write this file, ACT 5 has nothing to show and the build should
+# say so now, not eight minutes into a recording.
+vm_exec sh -c 'sudo -u harden test -w /etc/apparmor.d/harden' || \
+  die "the harden user cannot write /etc/apparmor.d/harden" \
+      "the demonstration depends on that write SUCCEEDING (see ACT 5)" \
+      "lxc exec $AAA_VM -- ls -l /etc/apparmor.d/harden  # expect 0644 harden:harden"
+ok "profile 'harden' active, and writable by the agent — next: scripts/50-agent.sh"

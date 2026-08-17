@@ -137,3 +137,177 @@ regenerated — and it verifies the profile came back pristine before declaring
 success. Relatedly, `70-baseline.sh` strips any leftover tamper line before
 baselining, so an interrupted demo can never poison a future snapshot. To
 restart a demo, use `make demo` (or `make reset`) — never `make rebaseline`.
+
+## 15. A cold boot measures files whose content is new every boot
+
+**This is the bug behind "the demo works, but won't restart."**
+
+The IMA policy measures every file root *reads*. Some of those files are
+rewritten with fresh content by design: `/var/lib/systemd/random-seed` (new
+entropy every boot), `/var/lib/systemd/timesync/clock`, `/var/log/lastlog` and
+`/var/log/wtmp` (updated on every login the verifier makes). Their hash is
+different on every run, so an allowlist frozen at build time can never contain
+it.
+
+The consequence was precisely the reported symptom. The first attestation
+after a build passed, because the allowlist had just been frozen from that
+exact log. Then `make demo` cold-booted the VM (correctly — see #14), the new
+boot wrote a new random seed, and stage 6 reported measurements "not on the
+signed allowlist" forever after. The verifier stopped signing, no certificate
+was ever issued, and the demo hung in ACT 2 waiting for funding that was never
+coming. It looked exactly like a tamper, and it was the machine breathing.
+
+IMA policy syntax cannot exclude a path (it matches on `fsmagic`, `uid`, LSM
+labels — not names), so the exclusion has to live in the verifier. **Fix:**
+don't guess which paths are volatile — *measure* it. `70-baseline.sh` now boots
+the same disk twice and runs two full attestations, and any path that presents
+more than one hash across those identical runs is volatile by observation. The
+result is written to `volatile-paths.txt`, GPG-signed alongside the allowlist,
+and stage 6 excuses a measurement whose path is on it.
+
+Two guard rails keep this from eating the demonstration, both enforced in
+`verifier/imalog.py` and covered by `tests/test_imalog.py`:
+
+- **PROTECTED** paths can never be auto-excluded however they behave —
+  `/etc/apparmor.d/*`, `/var/lib/harden/*`, `/usr/*`, `/bin/*`, `boot_aggregate`.
+  If one of those moves, `make rebaseline` says so by name and attestation
+  still fails. The agent's constraint is in that set, so the tamper works
+  exactly as before.
+- **ALWAYS_VOLATILE** covers `/etc/ssh/harden-cert.pub`, which the verifier
+  rewrites every cycle on purpose.
+
+(`verifier/imalog.py`, `verifier/attest-once.py` stage 6, `scripts/70-baseline.sh`)
+
+## 16. The fleet's addresses were never pinned, only the VM's
+
+Bug #7 pinned the workload VM's address. The three fleet containers were left
+on DHCP — and the VM resolves `web-01`/`db-01`/`gw-01` from an `/etc/hosts`
+written once at baseline time and then **frozen into the `demo-ready`
+snapshot**. Restart a container, or reboot the host, and a lease could move.
+The snapshot then pointed the agent at an address nothing answered on, so the
+agent reported `NO AUTHORITY` on every host — the exact appearance of a
+defunded agent, with attestation passing perfectly. A demo that worked
+yesterday failed today with no visible cause.
+
+**Fix:** every address derives from `AAA_NET_CIDR` and the fleet is pinned the
+same way the VM is (`.11`, `.12`, `.13`), `70-baseline.sh` rewrites the
+`/etc/hosts` entries rather than appending to them, `reset.sh` starts any
+stopped fleet container, and `doctor.sh` fails if a host is not on its pin.
+(`scripts/lib/common.sh`, `scripts/60-fleet.sh`, `scripts/70-baseline.sh`,
+`scripts/reset.sh`)
+
+## 17. "The LXD agent answered" is not "the VM is ready"
+
+`wait_vm_ready` returns as soon as `lxc exec` works, which happens well before
+sshd is listening and the IMA policy has loaded. Everything immediately after a
+restore then raced the boot: sometimes the first attestation hit a VM with no
+sshd and reported a setup failure, sometimes it read a half-populated
+measurement log. Same command, different result, depending on the machine's
+mood. **Fix:** `wait_vm_settled` waits for sshd to be active *and* the
+measurement log to be populated, and every cold boot goes through
+`cold_boot_vm`. (`scripts/lib/common.sh`)
+
+## 18. State carried over from the previous run
+
+Two leaks made run N+1 differ from run N:
+
+- `console/status.json` was a **committed** file that the verifier overwrites
+  at runtime. A restarted verifier called `load_status()` and inherited the
+  last run's events and its `cert_expires_at`, so the console opened on a
+  filament draining from a certificate that no longer existed — narrating a
+  show that had already finished, which is exactly what the README promises it
+  never does.
+- `console-events.jsonl` is a drop-box the demo appends narration to, drained
+  by the verifier. Lines written while no verifier was running survived to the
+  next run and were replayed into the next console.
+
+**Fix:** the verifier starts from a blank status every time, `status.json` is
+generated and git-ignored (the console already renders "NO LIVE DATA" when it
+is absent), and `reset.sh` clears the drop-box. (`verifier/verifier.py`,
+`scripts/reset.sh`, `.gitignore`)
+
+## 19. The first build skipped the reboot that loads the IMA policy
+
+`20-workload.sh` decided whether to reboot with
+`[ -s /sys/kernel/security/ima/ascii_runtime_measurements ]` — "is the log
+non-empty?". A VM that has never loaded any policy still has **one** line in
+that log, the `boot_aggregate` the kernel always writes. So the test was true
+on a fresh build, the reboot was skipped, the policy never took effect, and the
+verification ten lines further down failed the build with the self-
+contradictory message "IMA measurement log is empty". Re-running `make build`
+hit the same branch and failed the same way.
+
+**Fix:** reboot when the policy file actually changed, or when the log holds
+nothing but the boot aggregate. (`scripts/20-workload.sh`)
+
+## 20. AppArmor cannot grant what the file permissions deny
+
+The profile says `/etc/apparmor.d/harden rw` and the README calls it "the
+loaded gun on the mantelpiece". But AppArmor only ever *restricts* — it cannot
+give the unprivileged `harden` user write access that ordinary Unix permissions
+refuse. `lxc file push` preserves the source file's mode, and the profile was
+pushed from `mktemp`: it landed **0600, owned by whoever ran the build**. The
+agent's tamper therefore hit `PermissionError`, printed "the tamper write was
+DENIED — that is not this demo", exited non-zero, and the `set -e` ERR trap
+aborted `90-demo.sh` at ACT 5 with nothing but a line number. The single most
+important moment in the project could not happen.
+
+**Fix:** push the profile `0644 harden:harden` — the agent owns its own
+constraint, which is the point — and *assert* the write is possible at build
+time (`40-apparmor.sh`), on restore (`reset.sh`) and in `doctor.sh`, instead of
+discovering it mid-recording. `vm_push` now takes an explicit mode and owner so
+no push silently inherits mktemp's 0600 again. (`scripts/lib/common.sh`,
+`scripts/40-apparmor.sh`, `scripts/50-agent.sh`, `scripts/reset.sh`)
+
+## 21. A snapshot of a running VM is crash-consistent, not identical
+
+`lxc snapshot` was taken while the VM was running, and `reset.sh` restored it
+after `lxc stop --force`. Every restore therefore replayed an ext4 journal from
+a hard-killed machine, and boot-time work could redo itself slightly
+differently — a small, drifting set of measurements that made restarts pass or
+fail depending on timing. **Fix:** `70-baseline.sh` stops the VM before
+snapshotting, so every restore starts from a byte-identical filesystem, and
+proves one full attestation *after* the snapshot — verifying the state the demo
+actually restores into, not the state that happened to exist while building it.
+(`scripts/70-baseline.sh`)
+
+## 22. Two verifiers, one status file
+
+`make console` starts a verifier; `make demo` starts its own if `pgrep` finds
+none. Kill a demo with `SIGKILL` (or start `make console` after a demo had
+already begun) and two verifiers ran at once, both writing `status.json` and
+both pushing certificates — the console flickered between two views and the
+certificate lifetime became unpredictable. **Fix:** the verifier takes a PID
+lock in `$AAA_STATE/verifier.pid` and refuses to start alongside a live one,
+ignoring a stale lock from a killed process; `doctor.sh` reports the count.
+(`verifier/verifier.py`, `scripts/doctor.sh`)
+
+## 23. `| grep -q` and `| head -1` under `set -o pipefail`
+
+The lesson `lxc_says` was written for (see `scripts/lib/common.sh`) had been
+re-learned in two more places: `90-demo.sh` piped the agent's output into
+`grep -q "NO AUTHORITY"`, and read the certificate expiry through `head -1`.
+Both close the pipe on their first match, SIGPIPE the still-writing upstream
+process, and under `pipefail` the pipeline reports failure **even though the
+match succeeded** — so a correct result fired the ERR trap mid-demo. **Fix:**
+capture, then match with a `case` statement; and `sed -n 1p` instead of
+`head -1`, because sed reads to EOF. (`scripts/90-demo.sh`)
+
+## 24. ACT 7 could wait forever
+
+The drain loop was `while true`, exiting only when the fleet refused the
+certificate. If anything kept the certificate alive — a second verifier still
+funding the agent (#22), or a tamper that never landed (#20) — the demo hung
+silently with no output and no timeout. **Fix:** the loop is bounded
+(`AAA_DRAIN_TIMEOUT`, default 300 s) and, on expiry, says what it means: the
+certificate never stopped working, so the tamper did not take. A demo should
+fail with an explanation, never hang. (`scripts/90-demo.sh`)
+
+## 25. The signed allowlist was never actually checked against its signature
+
+`70-baseline.sh` signed `allowlist.txt` and nothing ever verified it. The
+project's whole claim is that the verifier compares measurements against a
+*signed* inventory, so an allowlist edited after signing would have been
+trusted silently. **Fix:** stage 1 verifies the detached signature of both
+`allowlist.txt` and `volatile-paths.txt` before either is used, and `doctor.sh`
+reports the result. (`verifier/attest-once.py`, `scripts/doctor.sh`)

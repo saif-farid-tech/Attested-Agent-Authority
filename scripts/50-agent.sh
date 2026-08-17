@@ -40,13 +40,12 @@ json.dump({"fleet": fleet,
            "model_endpoint": f"http://{sys.argv[2]}:8080/completion"},
           open(sys.argv[1], "w"), indent=2)
 EOF
-vm_push "$tmp_cfg" "$AAA_VM_STATE/config.json"
+# bug #12: lxc file push preserves the mktemp source mode (0600 root), which
+# leaves the config unreadable by the harden user that runs the agent. State
+# the mode and owner explicitly instead of inheriting mktemp's.
+vm_push "$tmp_cfg" "$AAA_VM_STATE/config.json" 0644 harden:harden
 rm -f "$tmp_cfg"
-# lxc file push preserves the mktemp source mode (0600 root) — make the config
-# readable by the harden user that runs the agent, or it dies reading its own
-# config. Also fix ownership of everything the agent touches under its dir.
-vm_exec sh -c "chown harden:harden $AAA_VM_STATE/config.json $AAA_VM_STATE/agent.py &&
-               chmod 644 $AAA_VM_STATE/config.json"
+vm_exec sh -c "chown harden:harden $AAA_VM_STATE/agent.py"
 ok "agent config written (fleet + model endpoint http://$host_gw:8080)"
 
 # ---- verify outcome --------------------------------------------------------

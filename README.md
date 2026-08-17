@@ -243,6 +243,7 @@ make teardown       # removes everything the project created, and only that
 | `make preflight` | check the machine; change nothing |
 | `make build` | full build from scratch (~20 min), ends at a passing check + snapshot |
 | `make doctor` | one-shot health check of the whole chain — **run this when stuck** |
+| `make selftest` | check the scripts and the verifier's logic; needs no LXD, VM or TPM |
 | `make verify` | run the six-stage health check (see below) |
 | `make demo` | run the demonstration — **and to restart it, just run this again**; it resets to a clean state first (~30 s) |
 | `make reset` | return to the clean, passing state on demand (cold-boot restore of the snapshot) |
@@ -263,6 +264,19 @@ changed the agent's code and want the new binary to become the trusted one.
 > log intact, so only a cold boot (`make reset`, or `make demo`'s first act)
 > truly returns to a passing state.
 
+**Why the build reboots the VM three times.** A cold boot rewrites files whose
+content is *supposed* to be new every time — the systemd random seed, the
+timesync stamp, `lastlog`. Those are measured like everything else, so an
+allowlist frozen from a single warm boot flagged them as violations the moment
+the demo restarted, and the agent was never funded again. Rather than guess
+which paths behave that way, `make build` boots the same disk twice and attests
+twice, and treats any path that presents two different hashes across those
+identical runs as volatile — recording the result in a signed
+`volatile-paths.txt` beside the allowlist. Paths that matter can never be
+excused this way: the agent's own constraint, its code, and the system binaries
+are protected, so the tamper still fails attestation exactly as before
+([CORRECTIONS.md](CORRECTIONS.md) #15).
+
 ## When something breaks
 
 **Run `make doctor` first.** It checks the whole chain in one pass — VM up and
@@ -272,7 +286,7 @@ attestation — and prints one report with a ✓/✗ per item and the exact comm
 that fixes each ✗. It changes nothing, so it is always safe. When you are
 stuck, paste its output.
 
-For the attestation path specifically, `make verify` It checks six things in order — verifier files, the
+For the attestation path specifically, run `make verify`. It checks six things in order — verifier files, the
 connection to the VM, the measurement log, the TPM quote, the quote's
 signature, and the allowlist comparison — stops at the first failure, and
 prints the exact command that fixes it. Its final result is honest about
@@ -280,9 +294,10 @@ which world you're in: **pass**, **setup problem** (plumbing, fixable), or
 **attestation failure** — and that last one, right after a demo, is not a
 bug: *the red is the product.*
 
-Ten mistakes that cost real debugging time during the original build are
-documented with their fixes in [CORRECTIONS.md](CORRECTIONS.md), so you
-recognise them instantly if you meet a variant.
+Every mistake that cost real debugging time is documented with its fix in
+[CORRECTIONS.md](CORRECTIONS.md), so you recognise them instantly if you meet
+a variant. Entries #15–#25 are the reproducibility round specifically: the
+reasons a demo could work once and then refuse to restart.
 
 ## Honest limits
 
@@ -307,13 +322,15 @@ injection**, and nothing in it should be quoted as claiming it does.
 ```
 ├── README.md            you are here
 ├── Makefile             the menu behind every `make …` command
-├── CORRECTIONS.md       ten bugs found the hard way, published as errata
+├── CORRECTIONS.md       every bug found the hard way, published as errata
 ├── scripts/             the numbered build steps + teardown/reset/measure
 │   └── lib/             shared plumbing: safety guard, logging, detection
 ├── agent/agent.py       Harden: the agent itself (and its --tamper switch)
 ├── verifier/
 │   ├── attest-once.py   the six-stage health check
+│   ├── imalog.py        reads measurement logs; calibrates what legitimately varies
 │   └── verifier.py      the loop that checks, signs, and publishes status
+├── tests/               run with `make selftest` — no hardware needed
 ├── console/index.html   the web UI — one file, no internet access needed
 └── docs/
     ├── ARCHITECTURE.md  the three trust domains, with diagrams

@@ -36,6 +36,27 @@ for host in "${AAA_FLEET[@]}"; do
     lxc launch ubuntu:24.04 "$host" --network "$AAA_NET"
     ok "launched container $host"
   fi
+
+  # ---- pin the address (bug #16) -------------------------------------------
+  # The VM learns these addresses once, into an /etc/hosts that is frozen into
+  # the demo-ready snapshot. Under DHCP a restarted container could come back
+  # on a different lease, and the snapshot then pointed the agent at nothing:
+  # a demo that worked last week failing today for no visible reason.
+  want=${AAA_FLEET_ADDR[$host]}
+  nicdev=$(lxc config show "$host" --expanded | \
+           awk '/^  [a-z0-9]+:$/{d=$1} /type: nic/ && !found {gsub(":","",d); print d; found=1}')
+  [ -n "$nicdev" ] || die "$host has no NIC device" \
+      "the container's expanded config lists no nic" \
+      "lxc config show $host --expanded  # then re-run"
+  if [ "$(lxc config device get "$host" "$nicdev" ipv4.address 2>/dev/null)" = "$want" ]; then
+    log "$host address already pinned to $want"
+  else
+    lxc config device override "$host" "$nicdev" ipv4.address="$want" 2>/dev/null || \
+      lxc config device set "$host" "$nicdev" ipv4.address="$want"
+    lxc restart "$host" >/dev/null 2>&1 || true
+    ok "pinned $host to $want on device $nicdev"
+  fi
+
   for _ in $(seq 1 30); do
     lxc exec "$host" -- true >/dev/null 2>&1 && break; sleep 2
   done
@@ -64,9 +85,18 @@ for host in "${AAA_FLEET[@]}"; do
     die "$host: sshd is not trusting the CA" \
         "TrustedUserCAKeys did not take effect" \
         "lxc exec $host -- sshd -T | grep -i trusted  # inspect, then re-run"
-  addr=$(detect_fleet_addr "$host")
-  [ -n "$addr" ] || die "$host has no IPv4 address" "DHCP on $AAA_NET failed" \
+  # An address can take a few seconds to surface after a restart; ask again
+  # rather than failing the build on a race (bug #16).
+  addr=""
+  for _ in $(seq 1 30); do
+    addr=$(detect_fleet_addr "$host")
+    [ -n "$addr" ] && break
+    sleep 2
+  done
+  [ -n "$addr" ] || die "$host has no IPv4 address" "networking on $AAA_NET failed" \
       "lxc restart $host && re-run"
+  [ "$addr" = "${AAA_FLEET_ADDR[$host]}" ] || \
+    warn "$host answers on $addr, pin is ${AAA_FLEET_ADDR[$host]} — 'lxc restart $host' then re-run"
   log "$host at $addr"
 done
 ok "fleet ready: ${AAA_FLEET[*]} trust only certificates signed by $AAA_STATE/ssh_ca"
