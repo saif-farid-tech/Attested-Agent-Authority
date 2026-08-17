@@ -86,7 +86,55 @@ def test_the_agents_own_code_is_never_auto_excluded():
 def test_system_binaries_are_never_auto_excluded():
     a = log(("v1", "/usr/bin/ssh"))
     b = log(("v2", "/usr/bin/ssh"))
-    assert imalog.derive_volatile([a, b]) == list(imalog.ALWAYS_VOLATILE)
+    derived = imalog.derive_volatile([a, b])
+    assert "/usr/bin/ssh" not in derived
+    assert not imalog.is_volatile("/usr/bin/ssh", set(derived))
+    assert "/usr/bin/ssh" in imalog.protected_that_moved([a, b])
+
+
+# ---- bug #30: files whose NAME is new every boot --------------------------
+
+@case
+def test_journald_segments_are_excused_though_their_names_never_repeat():
+    # No journal filename ever occurs twice, so no hash-moved test can see
+    # them; the allowlist is frozen before the boot that creates the next one.
+    a = log(("j1", "/var/log/journal/mid/system@aaa-1.journal"))
+    b = log(("j2", "/var/log/journal/mid/system@bbb-2.journal"))
+    v = set(imalog.derive_volatile([a, b]))
+    assert imalog.is_volatile("/var/log/journal/mid/system@ccc-3.journal", v), \
+        "a segment created after the freeze must still be excused"
+
+
+@case
+def test_rotated_dmesg_is_excused_even_when_seen_only_once():
+    v = set(imalog.derive_volatile([log(("d", "/var/log/dmesg"))]))
+    assert imalog.is_volatile("/var/log/dmesg.0", v)
+
+
+@case
+def test_a_directory_whose_filenames_churn_is_derived_as_a_glob():
+    a = log(("x", "/var/spool/x/one"), ("s", "/etc/hosts"))
+    b = log(("y", "/var/spool/x/two"), ("s", "/etc/hosts"))
+    assert "/var/spool/x/*" in imalog.derive_volatile([a, b])
+    assert "/etc/*" not in imalog.derive_volatile([a, b])
+
+
+@case
+def test_a_directory_glob_is_never_derived_over_a_protected_path():
+    # /etc churns (one file comes and goes) — but /etc/apparmor.d/harden lives
+    # beneath it, so '/etc/*' must never be emitted.
+    a = log(("p", "/etc/appears-once"), ("h", "/etc/apparmor.d/harden"))
+    b = log(("h", "/etc/apparmor.d/harden"))
+    assert "/etc/*" not in imalog.derive_volatile([a, b])
+
+
+@case
+def test_no_pattern_can_ever_excuse_a_protected_path():
+    # Even a hand-edited (and re-signed) list saying '/usr/*' must not work.
+    hostile = {"/usr/*", "/etc/apparmor.d/*", "/var/lib/harden/*"}
+    assert not imalog.is_volatile("/usr/bin/ssh", hostile)
+    assert not imalog.is_volatile("/etc/apparmor.d/harden", hostile)
+    assert not imalog.is_volatile("/var/lib/harden/agent.py", hostile)
 
 
 @case

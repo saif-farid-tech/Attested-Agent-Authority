@@ -30,14 +30,20 @@ def entry(fhash: str, path: str) -> str:
     return f"10 {'0' * 40} ima-ng sha256:{fhash} {path}"
 
 
-def boot_log(seed: str, lastlog: str, profile: str = "profile-clean") -> str:
+def boot_log(seed: str, lastlog: str, profile: str = "profile-clean",
+             boot_id: str = "0001") -> str:
     """A plausible IMA log for one boot of the workload VM.
 
-    The interesting rows are the two that legitimately move: systemd rewrites
-    its random seed every boot, and sshd updates lastlog on every login the
-    verifier makes. Everything else is stable.
+    Three rows legitimately move. Systemd rewrites its random seed every boot
+    and sshd updates lastlog on every login the verifier makes — those keep
+    their PATH and change their hash, which the calibration can observe. The
+    journal segment is the harder class (bug #30): journald names every file
+    after the boot id, so the path itself is new each time and NO amount of
+    observing recurring paths can ever predict it.
     """
     return "\n".join([
+        entry("journal-" + boot_id,
+              f"/var/log/journal/864e2228/system@{boot_id}-000653.journal"),
         entry("aggregate", "boot_aggregate"),
         entry("sshbin", "/usr/bin/ssh"),
         entry("python", "/usr/bin/python3.14"),
@@ -81,10 +87,10 @@ def case(fn):
 # Baseline calibration: two cold boots + two attestations, exactly as
 # 70-baseline.sh captures them. The seed and lastlog differ between runs.
 BASELINE = [
-    boot_log("seed-a", "lastlog-1"),
-    boot_log("seed-b", "lastlog-2"),
-    boot_log("seed-b", "lastlog-3"),
-    boot_log("seed-b", "lastlog-4"),
+    boot_log("seed-a", "lastlog-1", boot_id="aaa1"),
+    boot_log("seed-b", "lastlog-2", boot_id="bbb2"),
+    boot_log("seed-b", "lastlog-3", boot_id="bbb2"),
+    boot_log("seed-b", "lastlog-4", boot_id="bbb2"),
 ]
 
 
@@ -126,7 +132,11 @@ def test_a_restart_with_a_brand_new_random_seed_still_passes():
     build_baseline(BASELINE)
     msg = check(boot_log("seed-NEVER-SEEN", "lastlog-NEVER-SEEN"))
     assert "every measurement recognised" in msg, msg
-    assert "2 volatile-path measurement(s) excused" in msg, msg
+    # The seed and lastlog at minimum; a journal segment is excused alongside
+    # them now, so assert the floor rather than an exact count.
+    import re
+    excused = int(re.search(r"(\d+) volatile-path", msg).group(1))
+    assert excused >= 2, msg
 
 
 @case
@@ -134,6 +144,32 @@ def test_ten_consecutive_restarts_all_pass():
     build_baseline(BASELINE)
     for i in range(10):
         check(boot_log(f"seed-{i}", f"lastlog-{i}"))
+
+
+@case
+def test_a_restart_whose_journal_filename_never_existed_before_passes():
+    """Their build failure, exactly. Every boot from the snapshot opens a NEW
+    journald segment: the filename has never been seen, so it is on no
+    allowlist, and being unable to recur it can never be observed 'moving'
+    either. Seven such measurements failed the attestation that 70-baseline
+    runs on itself, and the build died on its last line."""
+    build_baseline(BASELINE)
+    msg = check(boot_log("seed-z", "lastlog-z", boot_id="NEVER-BOOTED-BEFORE"))
+    assert "every measurement recognised" in msg, msg
+
+
+@case
+def test_journal_segments_do_not_become_a_hiding_place():
+    # The excuse is for names under the journal directory; it must not extend
+    # to the things the project protects, wherever they are measured from.
+    build_baseline(BASELINE)
+    try:
+        check(boot_log("seed-x", "lastlog-x", profile="profile-TAMPERED",
+                       boot_id="brand-new"))
+    except attest_once.StageFailure as e:
+        assert "/etc/apparmor.d/harden" in e.what, e.what
+    else:
+        raise AssertionError("a new journal name must not excuse the tamper")
 
 
 @case

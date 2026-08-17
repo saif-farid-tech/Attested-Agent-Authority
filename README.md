@@ -305,7 +305,9 @@ a variant. Entries #15–#25 are the reproducibility round specifically: the
 reasons a demo could work once and then refuse to restart. Entries #26–#29 are
 the round after it — three checks that answered "no" about a perfectly healthy
 machine, one of them at every single cold boot, which is what "it crashes, and
-it will not redo the demo" turned out to mean.
+it will not redo the demo" turned out to mean. #30 is the one that only shows
+up once a build gets all the way to the end: files whose *name* is generated at
+boot, which no allowlist frozen beforehand can contain.
 
 ## Honest limits
 

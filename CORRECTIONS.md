@@ -407,3 +407,55 @@ executable, and you are now debugging your own toolchain instead of the demo.
 the first lines of `common.sh`, which say exactly what is wrong and how to run
 it: `bash scripts/70-baseline.sh` (or just `make`).
 (`scripts/lib/common.sh`, every script in `scripts/`)
+
+## 30. A file whose NAME is new every boot can never be on the allowlist
+
+The build finally ran end to end — and died on its own last line, the
+attestation `70-baseline.sh` performs to prove the snapshot it just took
+actually verifies:
+
+```
+7 measurement(s) not on the signed allowlist:
+  40f4de85…  /var/log/journal/864e…/system@9a3a3ebc…-00000000000126d6-00065935a003a35e.journal
+  ee062dc9…  /var/log/journal/864e…/user-1002@bf878d9d…-0000000000011069-00065935970c2e56.journal
+  622aa785…  /var/log/dmesg.0 (+2 more)
+```
+
+The volatile calibration (#15) finds a path that shows **more than one hash
+across identical runs**. That test can only ever see a path that *recurs*.
+journald names every segment after the boot id and a sequence number, so a
+journal filename never occurs twice in the life of the machine: it cannot be
+observed moving, and it cannot be in an allowlist frozen before the boot that
+created it. `/var/log/dmesg.0` is the same class by rotation — it holds the
+*previous* boot's output under a name that only appears once the rotation has
+happened. Five calibration logs prove nothing about either.
+
+Two things were wrong, and both are fixed:
+
+- **The excuse could only name exact paths.** `volatile-paths.txt` may now
+  also hold glob patterns. They come from two places: `derive_dir_globs()`
+  emits `<dir>/*` for any directory whose *filenames* differ between identical
+  runs — the same "observe, don't assume" rule as #15, one level up — and a
+  short by-construction list covers `/var/log/journal/*` and `/var/log/dmesg*`,
+  whose churn is sporadic enough that a five-sample calibration can miss it.
+- **The baseline described a machine the demo never runs on.** The allowlist
+  was frozen *before* the snapshot, but `make demo` and `make reset` cold-boot
+  *from* the snapshot, and that boot reads files the build boots never had.
+  `70-baseline.sh` now captures the snapshot's own boot and re-freezes with it
+  included, then attests. The snapshot itself does not change — only the
+  inventory that describes it.
+
+The guard rails are stricter than before, not looser. A directory glob is
+never derived for a directory that *contains* a protected path (`/etc` can
+never become `/etc/*`, because `/etc/apparmor.d/harden` lives under it), and
+`is_volatile()` refuses to excuse a protected path however the signed list is
+worded — so even a hand-edited, re-signed `volatile-paths.txt` saying `/usr/*`
+cannot hide a changed system binary, the agent's code, or the tamper.
+
+What this does widen, honestly: a file appearing under an
+observed-churny unprotected directory is now excused rather than reported.
+`/var/log` is runtime-generated state that no build-time inventory can
+enumerate, and IMA policy has no path predicate to stop measuring it with —
+the alternative was a demo that can never complete a build. The protected set
+is what carries the demonstration, and nothing in it is excusable.
+(`verifier/imalog.py`, `verifier/attest-once.py`, `scripts/70-baseline.sh`)

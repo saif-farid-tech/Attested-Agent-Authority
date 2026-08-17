@@ -15,7 +15,9 @@
 # with the agent. So: boot twice, attest twice, and let the differences
 # between those identical runs teach us which paths are genuinely volatile
 # (bug #15). Then snapshot from a stopped VM so the restore is filesystem
-# consistent rather than crash consistent (bug #21).
+# consistent rather than crash consistent (bug #21) — and measure the boot
+# that comes up FROM that snapshot, because that, not the build, is the
+# machine the demo runs on (bug #30).
 
 cd "$(dirname "$0")/.." || exit 1
 . scripts/lib/common.sh
@@ -119,20 +121,8 @@ if [ "$entries" -gt 2000 ]; then
   warn "$entries allowlist entries — larger than the reference (~650–1100), but "
   warn "the broad FILE_CHECK policy explains it; attestation still works. See CORRECTIONS.md #3."
 fi
-ok "allowlist frozen and signed: $entries entries"
-ok "volatile paths calibrated and signed: ${volatile:-0} path(s) whose content is new every run"
-
-# Anything PROTECTED that moved is reported, never silently excused: the
-# agent's constraint and its code are in that set, and a change there is
-# exactly what this project exists to catch.
-moved=$(mktemp)
-python3 verifier/imalog.py protected-moved "$moved" "$CAL"/*.log
-if [ -s "$moved" ]; then
-  warn "these protected paths changed DURING the baseline — they are NOT excused:"
-  sed 's/^/        /' "$moved" >&2
-  warn "if that was you editing the agent, re-run: scripts/50-agent.sh && make rebaseline"
-fi
-rm -f "$moved"
+ok "allowlist frozen and signed: $entries entries (provisional — the snapshot's own boot is still to come)"
+ok "volatile paths calibrated and signed: ${volatile:-0} entr(y/ies) that legitimately vary"
 
 # ---- snapshot from a stopped VM (bug #21) ----------------------------------
 # A snapshot of a RUNNING VM is crash-consistent: the restore replays an ext4
@@ -151,6 +141,33 @@ lxc_says "$AAA_SNAPSHOT" info "$AAA_VM" || \
 lxc start "$AAA_VM" >/dev/null 2>&1 || true
 wait_vm_settled
 ok "snapshot '$AAA_SNAPSHOT' taken with the VM stopped"
+
+# ---- measure the boot the demo actually starts in (bug #30) ----------------
+# Everything above describes the machine we BUILT. The demo never runs there:
+# it runs in a cold boot FROM THE SNAPSHOT, which is what just came up. That
+# boot reads files the build boots never had — journald opens a new segment,
+# dmesg rotates — so freeze once more with this log included. The snapshot is
+# already taken and does not change; only the inventory that describes it does.
+capture_log "$CAL/snapshot-boot.log"
+freeze
+entries=$(wc -l < "$AAA_STATE/allowlist.txt")
+volatile=$(grep -cv '^#' "$AAA_STATE/volatile-paths.txt" || true)
+ok "allowlist re-frozen including the snapshot's own boot: $entries entries"
+ok "volatile list: ${volatile:-0} entr(y/ies) — paths that move, and globs for"
+ok "               directories whose filenames are generated at run time"
+
+# Anything PROTECTED that moved is reported, never silently excused: the
+# agent's constraint and its code are in that set, and a change there is
+# exactly what this project exists to catch. Checked over every log captured,
+# the snapshot's boot included.
+moved=$(mktemp)
+python3 verifier/imalog.py protected-moved "$moved" "$CAL"/*.log
+if [ -s "$moved" ]; then
+  warn "these protected paths changed DURING the baseline — they are NOT excused:"
+  sed 's/^/        /' "$moved" >&2
+  warn "if that was you editing the agent, re-run: scripts/50-agent.sh && make rebaseline"
+fi
+rm -f "$moved"
 
 # ---- prove attestation from the exact state the demo starts in -------------
 # This runs AFTER the snapshot on purpose: the thing that must verify is the
