@@ -45,7 +45,8 @@ doctor:
 
 # Runs anywhere — no LXD, no VM, no TPM. Catches the class of bug that used to
 # be found only halfway through a recording: a shell script that parses wrong,
-# and the measurement-log logic the restart depends on.
+# the measurement-log logic the restart depends on, and the three host-side
+# gates that once refused to let a healthy machine build at all (#26, #27).
 selftest:
 	@for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$$f" || exit 1; done
 	@echo "  ok  all shell scripts parse"
@@ -53,6 +54,7 @@ selftest:
 	@echo "  ok  python sources compile"
 	@python3 tests/test_imalog.py
 	@python3 tests/test_restart_scenario.py
+	@bash tests/test_vm_probe.sh
 
 verify:
 	scripts/80-verify.sh

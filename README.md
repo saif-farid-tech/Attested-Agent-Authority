@@ -194,6 +194,11 @@ Every line prints `ok` or `warn`. If anything is missing you get a numbered
 list, and each entry names the exact command that fixes it. Fix, re-run,
 repeat until it passes. This command is always safe.
 
+If preflight fails on something you are sure the machine has, run `make
+selftest` — it checks preflight's own logic (and the readiness probe every
+cold boot depends on) with no LXD, no VM and no TPM. That is where
+[CORRECTIONS.md](CORRECTIONS.md) #26 would have been caught.
+
 **2. Build the world (~20 minutes):**
 
 ```sh
@@ -297,7 +302,10 @@ bug: *the red is the product.*
 Every mistake that cost real debugging time is documented with its fix in
 [CORRECTIONS.md](CORRECTIONS.md), so you recognise them instantly if you meet
 a variant. Entries #15–#25 are the reproducibility round specifically: the
-reasons a demo could work once and then refuse to restart.
+reasons a demo could work once and then refuse to restart. Entries #26–#29 are
+the round after it — three checks that answered "no" about a perfectly healthy
+machine, one of them at every single cold boot, which is what "it crashes, and
+it will not redo the demo" turned out to mean.
 
 ## Honest limits
 

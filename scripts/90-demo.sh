@@ -13,8 +13,8 @@
 #     HELP. The measurement log is append-only; the past itself is measured.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 need lxc "lxd (snap)"
 require_script "$AAA_STATE/ssh_ca" scripts/60-fleet.sh
@@ -83,7 +83,9 @@ audit_fleet() {
 DEMO_VERIFIER_PID=""
 stop_demo_verifier() { [ -n "$DEMO_VERIFIER_PID" ] && kill "$DEMO_VERIFIER_PID" 2>/dev/null || true; }
 ensure_verifier() {
-  if pgrep -f "verifier/verifier.py" >/dev/null 2>&1; then
+  # verifier_pids(), not `pgrep -f verifier/verifier.py`: that pattern also
+  # matches the shell `make console` launches the verifier from (bug #28).
+  if [ -n "$(verifier_pids)" ]; then
     log "a verifier is already running — using it (start 'make console' for the UI)"
     return
   fi

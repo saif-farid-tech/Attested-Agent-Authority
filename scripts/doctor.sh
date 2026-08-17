@@ -4,8 +4,8 @@
 # something is wrong. This is the command to run FIRST when the demo misbehaves.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 
 pass=0; fail=0; warns=0
@@ -34,6 +34,14 @@ if instance_exists "$AAA_VM"; then
   detect_vm_tpm 2>/dev/null && P "vTPM visible inside VM" || F "no /dev/tpm* in VM — check the tpm device"
   imalines=$(lxc exec "$AAA_VM" -- sh -c 'wc -l < /sys/kernel/security/ima/ascii_runtime_measurements' 2>/dev/null || echo 0)
   [ "${imalines:-0}" -gt 10 ] && P "IMA log populated ($imalines measurements)" || F "IMA log empty — reboot: lxc restart $AAA_VM"
+  # Doctor must check EXACTLY what the build gates on, or it cheerfully reports
+  # a healthy machine while every script refuses to proceed — which is what
+  # bug #27 looked like from the outside. Same probe, same verdict.
+  settled=$(vm_settled_state)
+  case "$settled" in
+    *sshd=yes*) P "sshd listening in the VM (socket-activated ssh.socket counts)" ;;
+    *) F "nothing listening on port 22 in the VM — lxc exec $AAA_VM -- systemctl status ssh.socket ssh.service" ;;
+  esac
   lxc exec "$AAA_VM" -- sh -c 'aa-status 2>/dev/null | grep -q harden' && P "AppArmor profile 'harden' loaded" || F "profile not loaded — scripts/40-apparmor.sh"
   # ACT 5 of the demo is exactly this write succeeding (bug #20).
   if lxc exec "$AAA_VM" -- sh -c 'sudo -u harden test -w /etc/apparmor.d/harden' 2>/dev/null; then
@@ -111,14 +119,15 @@ for host in "${AAA_FLEET[@]}"; do
 done
 
 H "verifier daemon"
-# `pgrep -c` PRINTS 0 and EXITS 1 when nothing matches, so `|| echo 0` would
-# append a second zero and turn "none running" into the count "0\n0".
-nver=$(pgrep -fc "verifier/verifier.py" 2>/dev/null || true)
-nver=${nver//[^0-9]/}
-case "${nver:-0}" in
+# bug #28: this counted with `pgrep -fc verifier/verifier.py`, which also
+# matches the `bash -c` recipe shell `make console` runs the verifier from —
+# so one healthy verifier was reported as two, and the report told the user to
+# go killing things. verifier_pids() matches the python process itself.
+mapfile -t vpids < <(verifier_pids)
+case "${#vpids[@]}" in
   0) W "verifier.py not running — start with 'make console', or 'make demo' starts its own" ;;
-  1) P "verifier.py running (funding the agent)" ;;
-  *) F "$nver verifiers running — they fight over status.json and the cert; kill all but one" ;;
+  1) P "verifier.py running (pid ${vpids[0]}) — funding the agent" ;;
+  *) F "${#vpids[@]} verifiers running (pids ${vpids[*]}) — they fight over status.json and the cert; kill all but one: kill ${vpids[*]:1}" ;;
 esac
 if [ -s "$AAA_STATE/console-events.jsonl" ]; then
   W "queued console narration is waiting for a verifier ($AAA_STATE/console-events.jsonl)"

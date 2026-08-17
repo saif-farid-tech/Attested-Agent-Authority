@@ -18,8 +18,8 @@
 # consistent rather than crash consistent (bug #21).
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 need lxc "lxd (snap)"
 need gpg gnupg

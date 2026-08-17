@@ -311,3 +311,99 @@ project's whole claim is that the verifier compares measurements against a
 trusted silently. **Fix:** stage 1 verifies the detached signature of both
 `allowlist.txt` and `volatile-paths.txt` before either is used, and `doctor.sh`
 reports the result. (`verifier/attest-once.py`, `scripts/doctor.sh`)
+
+## 26. `tpm_device` is not the name of any LXD API extension
+
+`00-preflight.sh` checked for vTPM support by looking for `"tpm_device"` in
+the `api_extensions` array of `GET /1.0`. The extension is called
+**`tpm_device_type`**, and the check matched with the quotes included, so
+`"tpm_device"` never matched `"tpm_device_type"` — on any LXD, at any version,
+forever. Since `make build` depends on `make preflight`, **the documented way
+into this project was permanently shut**, with a fix instruction
+(`sudo snap refresh lxd`) that could not possibly help. The irony is complete
+two scripts later: `20-workload.sh` attaches the vTPM successfully on exactly
+the machine preflight has just declared incapable of one.
+
+Which is why the failure was so expensive: told the front door was broken,
+you start running the numbered scripts by hand, in the wrong order, and every
+subsequent error is about *that* instead of about anything real.
+
+**Fix:** `detect_lxd_ext` takes one or more names and matches them exactly;
+`detect_lxd_vtpm` asks for `tpm_device_type`. `20-workload.sh` no longer trusts
+preflight to have caught it either — if `lxc config device add … tpm` fails it
+says what that means instead of leaving the ERR trap to print a line number.
+Both names are covered by `tests/test_vm_probe.sh`, so a wrong extension name
+can never again be discovered by a user rather than by `make selftest`.
+(`scripts/lib/detect.sh`, `scripts/00-preflight.sh`, `scripts/20-workload.sh`)
+
+## 27. "sshd is not listening" was a lie: Ubuntu socket-activates it
+
+`wait_vm_settled` (#17) decided the VM was usable when
+
+```sh
+systemctl is-active ssh || systemctl is-active sshd
+```
+
+succeeded. On Ubuntu 22.10 and later — the workload VM is 24.04 — **sshd is
+socket-activated**: `ssh.socket` holds port 22 and `ssh.service` reports
+`inactive` until a connection actually arrives. The gate was therefore false on
+a completely healthy VM, forever, and every path that cold-boots the VM ran its
+90 attempts and then died:
+
+- `20-workload.sh`, on the reboot that loads the IMA policy — so the **first
+  build never finished**;
+- `70-baseline.sh` — so `make rebaseline` could not run either;
+- `reset.sh`, which is **ACT 0 of every demo** — so even a demo that had been
+  built successfully could not be restarted.
+
+That is the whole of "it crashes, and it will not redo the demo": one wrong
+question, asked at every cold boot.
+
+Worse, the failure was unfalsifiable from the outside. The message named two
+possible causes ("sshd is not listening, or the IMA policy did not load"), and
+`make doctor` — the command that message points at — did not check sshd at all,
+so doctor reported a perfectly healthy machine while every script refused to
+proceed.
+
+**Fix:** ask the question that matters — *is anything listening on port 22?* —
+accepting `ssh.socket`, `ssh.service`, `sshd.service` or a listener seen by
+`ss` / `/proc/net/tcp`, whatever the unit is called. The probe prints what it
+saw (`sshd=yes ima=2043`) so a timeout reports the truth instead of guessing
+between two causes; `doctor.sh` now runs **the same probe**, so it can never
+again bless a machine the build is refusing; and `20-workload.sh` installs
+`openssh-server` rather than assuming the image has it, as `60-fleet.sh`
+already did for the containers. The probe is unit-tested off-VM in
+`tests/test_vm_probe.sh`, socket activation included.
+(`scripts/lib/common.sh`, `scripts/doctor.sh`, `scripts/20-workload.sh`)
+
+## 28. The shell that launched the verifier was counted as a second verifier
+
+`doctor.sh` counted with `pgrep -fc "verifier/verifier.py"`. `make console`
+runs its recipe through `bash -c "… python3 verifier/verifier.py & …"`, so the
+**recipe shell's own command line contains the pattern** — one healthy verifier
+was reported as `2 verifiers running — they fight over status.json and the
+cert; kill all but one`. The advice was to go killing processes to fix
+something that was not happening; the PID lock from #22 makes a genuine second
+verifier impossible in the first place.
+
+**Fix:** `verifier_pids()` anchors the match at `argv[0]` so only the python
+process itself counts, `doctor.sh` prints the actual PIDs (and, if there really
+are several, the exact `kill` command), and `90-demo.sh` decides whether to
+start its own verifier the same way. Covered in `tests/test_vm_probe.sh`, with
+a fixture that fails if the naive pattern stops being a false positive — a test
+that quietly stops testing anything is worse than no test.
+(`scripts/lib/common.sh`, `scripts/doctor.sh`, `scripts/90-demo.sh`)
+
+## 29. `sh scripts/70-baseline.sh` produces gibberish, not an error
+
+Every script is bash and every script began with `source scripts/lib/…`. Run
+one with `sh` — a reasonable thing to try when a script seems stuck — and dash
+prints `source: not found` four times, then `guard_host: not found`, then `Bad
+substitution`, and exits 0. Nothing in that output says "you used the wrong
+shell", so the next thing you do is `chmod +x` a file that was already
+executable, and you are now debugging your own toolchain instead of the demo.
+
+**Fix:** scripts source the library with POSIX `.` so a non-bash shell reaches
+the first lines of `common.sh`, which say exactly what is wrong and how to run
+it: `bash scripts/70-baseline.sh` (or just `make`).
+(`scripts/lib/common.sh`, every script in `scripts/`)

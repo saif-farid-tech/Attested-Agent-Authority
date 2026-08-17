@@ -5,7 +5,7 @@
 #   0 full pass · 2 attestation failure (the system working) · 1 setup failure
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
+. scripts/lib/common.sh
 guard_host
 need python3 python3
 

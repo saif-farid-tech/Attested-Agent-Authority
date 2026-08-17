@@ -7,8 +7,8 @@
 # The user never opens a shell inside the VM.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 need lxc "lxd (snap)"
 lxc network show "$AAA_NET" >/dev/null 2>&1 || \
@@ -28,11 +28,17 @@ else
   ok "created VM $AAA_VM (secure boot on, 2 vCPU, 4 GiB)"
 fi
 
-# vTPM device (requires the tpm_device API extension checked in preflight)
+# vTPM device (requires the tpm_device_type API extension checked in preflight)
 if lxc config device get "$AAA_VM" vtpm path >/dev/null 2>&1; then
   log "vTPM device already attached"
 else
-  lxc config device add "$AAA_VM" vtpm tpm
+  # If this fails the LXD is too old for the tpm device type. Say so here —
+  # preflight's job is to catch it first, but a wrong check there once made
+  # this the real gate (bug #26), and a bare ERR-trap line number told nobody.
+  lxc config device add "$AAA_VM" vtpm tpm || \
+    die "could not attach a vTPM to $AAA_VM" \
+        "this LXD does not support the 'tpm' device type (API extension tpm_device_type)" \
+        "sudo snap refresh lxd   # then re-run scripts/20-workload.sh"
   ok "attached vTPM device"
 fi
 
@@ -62,10 +68,14 @@ vm_exec sh -c 'systemctl disable --now apport >/dev/null 2>&1 || true
 ok "apport disabled in the VM (crash noise would ruin recordings)"
 
 # ---- packages -------------------------------------------------------------
+# openssh-server is in the cloud image, but it is also the transport the whole
+# attestation depends on — assert it rather than assume it, exactly as
+# 60-fleet.sh does for the containers.
 vm_exec sh -c 'export DEBIAN_FRONTEND=noninteractive
-               command -v tpm2_quote >/dev/null && command -v aa-status >/dev/null || {
-                 apt-get update -q && apt-get install -qy tpm2-tools apparmor-utils python3; }'
-ok "VM packages present: tpm2-tools, apparmor-utils, python3"
+               command -v tpm2_quote >/dev/null && command -v aa-status >/dev/null &&
+               command -v sshd >/dev/null || {
+                 apt-get update -q && apt-get install -qy tpm2-tools apparmor-utils python3 openssh-server; }'
+ok "VM packages present: tpm2-tools, apparmor-utils, python3, openssh-server"
 
 # ---- users ----------------------------------------------------------------
 # harden : the agent's own account (constrained by the AppArmor profile)

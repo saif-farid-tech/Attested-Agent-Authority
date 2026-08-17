@@ -5,8 +5,8 @@
 # assumes preflight has passed.
 
 cd "$(dirname "$0")/.." || exit 1
-source scripts/lib/common.sh
-source scripts/lib/detect.sh
+. scripts/lib/common.sh
+. scripts/lib/detect.sh
 guard_host
 
 problems=()
@@ -24,9 +24,9 @@ check "lxd: 'lxc' command on PATH" \
 check "lxd: daemon initialised and reachable" \
       "sudo lxd init --minimal" \
       lxc query /1.0
-check "lxd: 'tpm_device' API extension (vTPM support)" \
-      "sudo snap refresh lxd  # needs LXD >= 4.4" \
-      detect_lxd_ext tpm_device
+check "lxd: vTPM support ('tpm_device_type' API extension)" \
+      "sudo snap refresh lxd  # the tpm device type needs a current LXD" \
+      detect_lxd_vtpm
 check "kvm: /dev/kvm present (VMs need hardware virtualisation)" \
       "enable VT-x/AMD-V in firmware; check 'kvm-ok' from cpu-checker" \
       test -e /dev/kvm
