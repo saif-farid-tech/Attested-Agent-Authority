@@ -129,7 +129,10 @@ if pgrep -f "verifier/verifier\.py" | grep -qx "$shell"; then
 else
   fail "fixture: the naive pattern no longer matches the shell — test is vacuous"
 fi
-found=$(verifier_pids)
+# One PID per line, and a REAL verifier may well be running on this machine
+# (an earlier demo, or 'make console' in another terminal) — so flatten to a
+# single space-separated line and assert membership, never the exact set.
+found=$(verifier_pids | tr '\n' ' ')
 case " $found " in
   *" $real "*) pass "the real verifier process is counted" ;;
   *) fail "the real verifier process is counted (got '${found:-none}')" ;;
