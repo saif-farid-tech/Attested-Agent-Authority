@@ -519,3 +519,37 @@ the real `ssh()` would silently test the wrong thing.
 
 **Fix:** `check()` restores the original `ssh()` in a `finally` block.
 (`tests/test_restart_scenario.py`)
+
+## 35. A leaked verifier lock, recycled to a live pid, blocks every restart
+
+The demo works once; the second `make demo` dies at ACT 0 with **"the verifier
+failed to start."** Two facts combine into it:
+
+- **The lock is leaked on every stop.** The verifier writes its pid to
+  `verifier.pid` and removes it in an `atexit` handler. But both ways the demo
+  stops it send **SIGTERM** — `stop_demo_verifier` in `90-demo.sh` runs a plain
+  `kill`, and `make console` runs `trap 'kill 0'` — and **Python runs no
+  `atexit` handlers on a signal.** So the pid file survives every stop, now
+  pointing at a dead pid.
+
+- **A bare liveness check believes any live pid is a verifier.** `acquire_lock()`
+  did `os.kill(other, 0)`, which proves the pid is *alive*, not that it is a
+  verifier. The OS is free to recycle a dead pid to any unrelated process; once
+  it does, the next verifier reads the stale pid, finds it "alive," and
+  `sys.exit`s with "another verifier is already running." `ensure_verifier`
+  then sees the process gone within two seconds and aborts the whole demo. This
+  is exactly bug #28's lesson — a match is not proof it is a verifier — one
+  layer down, at the pid lock instead of the process count.
+
+Two things were wrong, and both are fixed:
+
+- **The lock is now cleaned up on SIGTERM too**, not just on a clean exit, so
+  the normal way of stopping the verifier no longer leaves a stale lock behind.
+  (SIGINT already exited cleanly through `KeyboardInterrupt`.)
+- **A live pid is only a competitor if it really is a verifier.**
+  `_pid_is_verifier()` reads `/proc/<pid>/cmdline` and confirms it ends in
+  `verifier/verifier.py` before refusing to start; a recycled pid belonging to
+  anything else is treated as a stale lock and taken over. The genuine
+  two-verifiers case (bug #22) still blocks — a test asserts both directions,
+  so the fix cannot quietly degrade into "always take the lock."
+(`verifier/verifier.py`, `tests/test_restart_scenario.py`)

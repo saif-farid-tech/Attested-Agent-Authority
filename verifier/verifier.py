@@ -17,6 +17,7 @@ import atexit
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -77,29 +78,69 @@ def fresh_status() -> dict:
             "cert_expires_at": 0.0, "cert_ttl": CERT_SECONDS, "events": []}
 
 
+def _pid_is_verifier(pid: int) -> bool:
+    """True only if `pid` is a live process that really is a verifier.
+
+    `os.kill(pid, 0)` proves the pid is ALIVE, not that it is a verifier — and
+    that is the whole trap (the same lesson as bug #28, where a command line
+    that merely matched a pattern was mistaken for proof). The lock file is
+    leaked on every normal stop: the demo and 'make console' halt the verifier
+    with a plain kill (SIGTERM), and Python runs no atexit handlers on a signal,
+    so verifier.pid is left behind pointing at a now-dead pid. The OS is free to
+    recycle that pid to any unrelated process; if the next verifier trusts a
+    bare liveness check it mistakes that stranger for 'a verifier already
+    running' and refuses to start — the demo then dies on redo with 'the
+    verifier failed to start'. So confirm the command line before believing it.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            argv = fh.read().split(b"\0")
+    except FileNotFoundError:
+        return False          # the pid is gone; the lock is stale
+    except OSError:
+        return True           # exists but unreadable — be conservative
+    return any(a.endswith(b"verifier/verifier.py") for a in argv)
+
+
+def _install_lock_cleanup(lock: Path) -> None:
+    """Remove the pid lock on exit — on a clean exit AND on SIGTERM.
+
+    atexit alone is not enough: SIGTERM (what the demo's stop_demo_verifier and
+    'make console' send) terminates the interpreter without running atexit, so
+    the lock survived every stop. Handle SIGTERM explicitly so the common way of
+    stopping the verifier no longer leaves a stale lock behind for the next run
+    to trip over. (SIGINT already exits cleanly via KeyboardInterrupt in main.)
+    """
+    def cleanup(*_a):
+        lock.unlink(missing_ok=True)
+    atexit.register(cleanup)
+
+    def on_sigterm(_signum, _frame):
+        cleanup()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, on_sigterm)
+
+
 def acquire_lock() -> None:
     """Refuse to start when another verifier is already live.
 
     Two verifiers race on status.json and both push certificates, so the
     console flickers between their views and the certificate lifetime becomes
     unpredictable — 'make console' plus a demo that started its own was enough
-    to do it (bug #22). A stale lock file from a killed process is ignored."""
+    to do it (bug #22). A stale lock — the pid is gone, OR the pid is alive but
+    belongs to some process the OS recycled it to rather than a verifier — is
+    ignored (bug #35)."""
     lock = STATE / "verifier.pid"
     try:
         other = int(lock.read_text().strip())
     except (FileNotFoundError, ValueError):
         other = 0
-    if other and other != os.getpid():
-        try:
-            os.kill(other, 0)
-        except OSError:
-            pass          # the pid is gone; the lock is stale, take it
-        else:
-            sys.exit(f"verifier: another verifier is already running (pid {other}).\n"
-                     f"          stop it first, or remove {lock} if it is stale.")
+    if other and other != os.getpid() and _pid_is_verifier(other):
+        sys.exit(f"verifier: another verifier is already running (pid {other}).\n"
+                 f"          stop it first, or remove {lock} if it is stale.")
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(f"{os.getpid()}\n")
-    atexit.register(lambda: lock.unlink(missing_ok=True))
+    _install_lock_cleanup(lock)
 
 
 def write_status(status: dict) -> None:
