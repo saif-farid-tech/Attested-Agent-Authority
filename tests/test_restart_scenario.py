@@ -70,10 +70,16 @@ def build_baseline(logs: list[str]) -> None:
         assert r.returncode == 0, r.stderr
 
 
+_original_ssh = attest_once.ssh
+
+
 def check(log_text: str):
     """Run the real stage 6 against a workload presenting this log."""
     attest_once.ssh = lambda *a, **k: log_text
-    return attest_once.stage6_allowlist(lambda _msg: None)
+    try:
+        return attest_once.stage6_allowlist(lambda _msg: None)
+    finally:
+        attest_once.ssh = _original_ssh
 
 
 CASES = []
@@ -265,6 +271,39 @@ def test_a_good_signature_passes():
         attest_once.verify_signature(STATE / "allowlist.txt")   # must not raise
     finally:
         attest_once.subprocess.run = real_run
+
+
+@case
+def test_ssh_timeout_is_a_stage_failure_not_a_crash():
+    """The verifier crashed on TimeoutExpired because ssh() did not catch it.
+    After a cold boot (every demo redo) the VM is slow to respond, the 60s
+    timeout fires, and the uncaught exception killed the verifier loop — no
+    certificates, demo hangs in ACT 2."""
+    real_run = attest_once.subprocess.run
+    def fake_run(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="ssh", timeout=60)
+    attest_once.subprocess.run = fake_run
+    try:
+        attest_once.ssh("true")
+        raise AssertionError("ssh() should have raised StageFailure on timeout")
+    except attest_once.StageFailure as e:
+        assert e.code == attest_once.SETUP_FAIL, \
+            f"expected SETUP_FAIL (1), got {e.code}"
+        assert "timed out" in e.what, e.what
+    finally:
+        attest_once.subprocess.run = real_run
+
+
+@case
+def test_verifier_survives_a_transient_attest_crash():
+    """The verifier's main loop had no exception handling around attest().
+    Any unhandled exception killed the loop permanently."""
+    _vspec = importlib.util.spec_from_file_location("verifier_mod", VERIFIER / "verifier.py")
+    _vmod = importlib.util.module_from_spec(_vspec)
+    _vspec.loader.exec_module(_vmod)
+    s = _vmod.fresh_status()
+    assert s["attestation"] == "unknown"
+    assert s["cert_expires_at"] == 0.0
 
 
 def main() -> int:

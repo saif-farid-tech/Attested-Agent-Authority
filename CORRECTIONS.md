@@ -459,3 +459,63 @@ enumerate, and IMA policy has no path predicate to stop measuring it with —
 the alternative was a demo that can never complete a build. The protected set
 is what carries the demonstration, and nothing in it is excusable.
 (`verifier/imalog.py`, `verifier/attest-once.py`, `scripts/70-baseline.sh`)
+
+## 31. SSH timeout crashes the verifier and agent instead of retrying
+
+Both `attest-once.py`'s `ssh()` and `agent.py`'s `ssh()` call
+`subprocess.run(…, timeout=60)`. On a timeout, Python raises
+`subprocess.TimeoutExpired` — which is **not** a `StageFailure` and is not
+caught anywhere in `ssh()`, `attest()`, or the verifier's main loop.
+
+After a cold boot (every demo redo via `reset.sh`), the VM is slow to
+respond. The SSH connection times out, `TimeoutExpired` propagates uncaught,
+and crashes the verifier process. Without a verifier, no certificates are
+issued, and the demo hangs in ACT 2 waiting for funding that is never coming —
+the same symptom as bug #15, but a completely different cause.
+
+The agent has the same defect: a slow fleet host crashes the agent with a
+traceback instead of reporting the error in one sentence (the same class of
+bug as #8).
+
+**Fix:** `attest-once.py`'s `ssh()` now catches `subprocess.TimeoutExpired`
+and `OSError` and converts them to `StageFailure` with a remedy that names the
+real cause ("the VM is slow to respond — it may still be booting"). The
+agent's `ssh()` catches the same exceptions and returns a synthetic failed
+`CompletedProcess`, so callers see a clean error string instead of a crash.
+(`verifier/attest-once.py`, `agent/agent.py`)
+
+## 32. The verifier loop dies on the first transient error
+
+`verifier.py`'s `while True` loop called `attest_once.attest()` with no
+exception handling. Any unhandled exception — `TimeoutExpired` from #31,
+`OSError` from a network flap, `binascii.Error` from a corrupt base64 quote,
+`UnicodeDecodeError` from unexpected SSH output — killed the loop permanently.
+The verifier process exited, no more certificates were issued, and the demo
+hung.
+
+A transient error during one attestation cycle should skip that cycle and try
+again on the next interval, not kill the verifier forever.
+
+**Fix:** the attestation call is wrapped in a broad `try/except` that logs the
+error as a console event, sets the status to `"error"`, and continues the loop.
+The next cycle runs normally. (`verifier/verifier.py`)
+
+## 33. Corrupt base64 in a TPM quote crashes through the retry loop
+
+`stage4_quote()` retries on `StageFailure` but `base64.b64decode()` of a
+corrupt or truncated SSH output raises `binascii.Error`, which is not a
+`StageFailure`. The exception bypassed the retry loop and crashed the
+attestation cycle. **Fix:** catch the decode error, wrap it as a
+`StageFailure`, and let the retry loop handle it.
+(`verifier/attest-once.py`)
+
+## 34. The test suite leaked a monkey-patched `ssh()` across test cases
+
+`check()` in `test_restart_scenario.py` replaced `attest_once.ssh` with a
+lambda and never restored it. Every test that ran after the first `check()`
+call hit the lambda instead of the real `ssh()` function. This made it
+impossible to test the SSH timeout fix (#31) — and any future test that needed
+the real `ssh()` would silently test the wrong thing.
+
+**Fix:** `check()` restores the original `ssh()` in a `finally` block.
+(`tests/test_restart_scenario.py`)

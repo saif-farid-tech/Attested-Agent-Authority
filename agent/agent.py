@@ -127,22 +127,31 @@ def ssh(host: str, command: str) -> subprocess.CompletedProcess:
     """Run a command on a fleet host. Authority = key + short-lived certificate.
     sshd on the fleet trusts only certificates signed by the verifier's CA
     (TrustedUserCAKeys); a bare public key gets us nothing."""
-    return subprocess.run(
-        ["ssh", "-i", str(KEY),
-         "-o", f"CertificateFile={CERT}",
-         "-o", "IdentitiesOnly=yes",
-         "-o", "BatchMode=yes",
-         "-o", "ConnectTimeout=5",
-         # Fleet hosts are ephemeral demo containers whose host keys change on
-         # rebuild; the security here is US proving identity to THEM with a
-         # CA-signed certificate, not verifying their host key. Keep the demo
-         # reproducible across rebuilds by not pinning their host keys.
-         "-o", "StrictHostKeyChecking=no",
-         "-o", "UserKnownHostsFile=/dev/null",
-         "-o", "LogLevel=ERROR",
-         f"harden@{host}", command],
-        capture_output=True, text=True, timeout=60,
-    )
+    try:
+        return subprocess.run(
+            ["ssh", "-i", str(KEY),
+             "-o", f"CertificateFile={CERT}",
+             "-o", "IdentitiesOnly=yes",
+             "-o", "BatchMode=yes",
+             "-o", "ConnectTimeout=5",
+             # Fleet hosts are ephemeral demo containers whose host keys change on
+             # rebuild; the security here is US proving identity to THEM with a
+             # CA-signed certificate, not verifying their host key. Keep the demo
+             # reproducible across rebuilds by not pinning their host keys.
+             "-o", "StrictHostKeyChecking=no",
+             "-o", "UserKnownHostsFile=/dev/null",
+             "-o", "LogLevel=ERROR",
+             f"harden@{host}", command],
+            capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=["ssh", host], returncode=124,
+            stdout="", stderr=f"ssh to {host} timed out after 60s")
+    except OSError as e:
+        return subprocess.CompletedProcess(
+            args=["ssh", host], returncode=1,
+            stdout="", stderr=str(e))
 
 
 def survey(host: str) -> list[str]:

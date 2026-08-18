@@ -161,7 +161,15 @@ def main() -> int:
         next_attest = now + INTERVAL
 
         # slow lane (every INTERVAL): a full attestation cycle
-        code, reason, _ = attest_once.attest(report=lambda _line: None)
+        try:
+            code, reason, _ = attest_once.attest(report=lambda _line: None)
+        except Exception as exc:
+            add_event(status, "fail",
+                      f"attestation cycle crashed: {type(exc).__name__}: {exc}")
+            status["attestation"] = "error"
+            status["reason"] = f"transient error (will retry): {exc}"
+            write_status(status)
+            continue
         now = time.time()
 
         if code == 0:

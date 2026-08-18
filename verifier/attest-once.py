@@ -82,15 +82,26 @@ def ssh(command: str, binary: bool = False) -> bytes | str:
     last = None
     for attempt in range(2):
         addr = vm_addr(refresh=(attempt > 0))
-        last = subprocess.run(
-            ["ssh", "-i", str(SSH_KEY), "-o", "BatchMode=yes",
-             "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
-             "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
-             f"attest@{addr}", command],
-            capture_output=True, timeout=60)
+        try:
+            last = subprocess.run(
+                ["ssh", "-i", str(SSH_KEY), "-o", "BatchMode=yes",
+                 "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+                 "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+                 f"attest@{addr}", command],
+                capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            raise StageFailure(
+                SETUP_FAIL,
+                f"ssh to attest@{addr} timed out after 60s",
+                f"the VM is slow to respond — it may still be booting after a restore: "
+                f"lxc exec {VM_NAME} -- true  (if this hangs, wait or: lxc restart {VM_NAME})")
+        except OSError as e:
+            raise StageFailure(
+                SETUP_FAIL, f"ssh to attest@{addr} failed: {e}",
+                "ssh may not be installed or is not executable")
         if last.returncode == 0:
             return last.stdout if binary else last.stdout.decode()
-    err = last.stderr.decode().strip() or "no output"
+    err = last.stderr.decode(errors="replace").strip() or "no output"
     hint = ("the VM is unreachable — check it is up and on the expected address: "
             f"lxc list {VM_NAME}  (start it with: lxc start {VM_NAME})"
             if "timed out" in err or "route to host" in err or "refused" in err
@@ -188,7 +199,14 @@ def stage4_quote(report, workdir):
         except StageFailure as e:
             last = e; time.sleep(1); continue
 
-        raw = base64.b64decode(blob) if blob.strip() else b""
+        try:
+            raw = base64.b64decode(blob) if blob.strip() else b""
+        except Exception:
+            last = StageFailure(
+                SETUP_FAIL, "the workload returned corrupt base64 in the TPM quote",
+                "transient — the attestation cycle will retry; if persistent: "
+                "lxc exec harden -- tpm2_pcrread sha256:10")
+            time.sleep(1); continue
         if not raw:
             last = StageFailure(
                 SETUP_FAIL, "the workload returned an empty TPM quote",
