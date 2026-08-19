@@ -306,6 +306,86 @@ def test_verifier_survives_a_transient_attest_crash():
     assert s["cert_expires_at"] == 0.0
 
 
+def _load_verifier():
+    spec = importlib.util.spec_from_file_location("verifier_mod", VERIFIER / "verifier.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _wait_cmdline(pid: int, want_verifier: bool) -> None:
+    """Wait until the child has exec'd and /proc/<pid>/cmdline reflects it.
+    Right after Popen returns there is a brief window before exec where cmdline
+    is not yet the child's argv; polling here keeps the tests deterministic."""
+    import time as _t
+    vmod = _load_verifier()
+    for _ in range(200):                       # up to ~2s
+        try:
+            populated = bool(open(f"/proc/{pid}/cmdline", "rb").read().strip(b"\0"))
+        except OSError:
+            populated = False
+        if populated and vmod._pid_is_verifier(pid) == want_verifier:
+            return
+        _t.sleep(0.01)
+    raise AssertionError(f"child {pid} did not reach the expected cmdline state")
+
+
+@case
+def test_a_recycled_lock_pid_that_is_not_a_verifier_does_not_block_startup():
+    """bug #35: the lock file is leaked on every stop (SIGTERM runs no atexit),
+    and the OS may recycle that pid to an unrelated LIVE process. A bare
+    liveness check then mistook that stranger for a running verifier and the
+    next verifier refused to start — the demo died on redo with 'the verifier
+    failed to start'. A live pid that is NOT a verifier must be treated as a
+    stale lock and taken over."""
+    import signal
+    vmod = _load_verifier()
+    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    old_sigterm = signal.getsignal(signal.SIGTERM)
+    try:
+        _wait_cmdline(live.pid, want_verifier=False)
+        d = Path(tempfile.mkdtemp(prefix="aaa-lock-"))
+        vmod.STATE = d
+        (d / "verifier.pid").write_text(f"{live.pid}\n")
+        vmod.acquire_lock()   # must NOT sys.exit on a live non-verifier pid
+        assert (d / "verifier.pid").read_text().strip() == str(os.getpid()), \
+            "acquire_lock did not take over the stale lock"
+    finally:
+        signal.signal(signal.SIGTERM, old_sigterm)   # acquire_lock installs one
+        live.terminate(); live.wait()
+
+
+@case
+def test_a_live_verifier_pid_still_blocks_a_second_verifier():
+    """The fix must not become 'always take the lock' (that would re-open bug
+    #22, two verifiers racing on status.json). A pid whose command line really
+    is verifier/verifier.py is a genuine competitor and must still block."""
+    import signal
+    vmod = _load_verifier()
+    # A live process whose argv ends in 'verifier/verifier.py' — the command
+    # line _pid_is_verifier looks for — without running the real attestation loop.
+    fake_dir = Path(tempfile.mkdtemp()) / "verifier"
+    fake_dir.mkdir(parents=True)
+    fake = fake_dir / "verifier.py"
+    fake.write_text("import time; time.sleep(30)\n")
+    live = subprocess.Popen([sys.executable, str(fake)])
+    old_sigterm = signal.getsignal(signal.SIGTERM)
+    try:
+        _wait_cmdline(live.pid, want_verifier=True)
+        d = Path(tempfile.mkdtemp(prefix="aaa-lock-"))
+        vmod.STATE = d
+        (d / "verifier.pid").write_text(f"{live.pid}\n")
+        try:
+            vmod.acquire_lock()
+        except SystemExit as e:
+            assert "already running" in str(e), e
+        else:
+            raise AssertionError("a live verifier pid should block a second verifier")
+    finally:
+        signal.signal(signal.SIGTERM, old_sigterm)
+        live.terminate(); live.wait()
+
+
 def main() -> int:
     failed = 0
     for fn in CASES:
