@@ -67,6 +67,42 @@ vm_exec sh -c 'systemctl disable --now apport >/dev/null 2>&1 || true
                [ -f /etc/default/apport ] && sed -i "s/enabled=1/enabled=0/" /etc/default/apport || true'
 ok "apport disabled in the VM (crash noise would ruin recordings)"
 
+# ---- quality of life: landscape-sysinfo motd off (bug #36) -----------------
+# /etc/update-motd.d/50-landscape-sysinfo refreshes its cache if it is more
+# than 60s stale, and does so SYNCHRONOUSLY, as root, on the next SSH login
+# (via pam_motd) — running mv/touch/chown/dirname to replace the cache file
+# atomically. Every cold boot this project does (build, 'make reset', 'make
+# demo') takes well over 60s before the first SSH-based attestation runs, so
+# that first login always regenerates the cache and measures those coreutils
+# fresh — exactly the moment nothing has calibrated for, because every other
+# calibration read is a root `lxc exec`, not an SSH login. The result: the
+# allowlist never agrees with the very attestation that matters, on every
+# single restart. Sysinfo trivia in a login banner is not worth a source of
+# nondeterministic measurements — disable the script outright, like apport.
+vm_exec chmod -x /etc/update-motd.d/50-landscape-sysinfo
+ok "landscape-sysinfo motd disabled (nondeterministic root-triggered rewrite on login)"
+
+# ---- quality of life: background timers off (bug #38) ----------------------
+# update-notifier-download.timer (OnStartupSec=5m, no jitter) and
+# sysstat-collect.timer (every 10 minutes, on the clock) were caught by name —
+# each fired inside a live calibration or demo window and measured files
+# (/usr/bin/test, /usr/bin/ssh, python3-debian's bytecode cache,
+# /usr/lib/sysstat/debian-sa1) nothing had calibrated for, failing attestation
+# exactly like bug #36. 70-baseline.sh's calibration and a full 'make demo'
+# both comfortably exceed 10 minutes end to end, and several more of these
+# timers sit inside or near that window (motd-news.timer fires
+# OnStartupSec=1m; fwupd-refresh.timer's RandomizedDelaySec=1h can land
+# anywhere in the first hour). None of them are needed for anything this
+# project measures — mask the lot up front rather than rediscover each one by
+# name after another failed restart.
+for t in update-notifier-download.timer sysstat-collect.timer sysstat-summary.timer \
+         systemd-tmpfiles-clean.timer fwupd-refresh.timer motd-news.timer \
+         apt-daily.timer apt-daily-upgrade.timer man-db.timer e2scrub_all.timer \
+         update-notifier-motd.timer fstrim.timer dpkg-db-backup.timer logrotate.timer; do
+  vm_exec systemctl disable --now "$t" >/dev/null 2>&1 || true
+done
+ok "background timers disabled (package fetches, sysstat, fwupd, motd-news, …)"
+
 # ---- packages -------------------------------------------------------------
 # openssh-server is in the cloud image, but it is also the transport the whole
 # attestation depends on — assert it rather than assume it, exactly as

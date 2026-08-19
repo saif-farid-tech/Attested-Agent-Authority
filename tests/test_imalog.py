@@ -138,11 +138,15 @@ def test_no_pattern_can_ever_excuse_a_protected_path():
 
 
 @case
-def test_boot_aggregate_is_never_auto_excluded():
-    a = log(("agg1", "boot_aggregate"))
-    b = log(("agg2", "boot_aggregate"))
-    assert "boot_aggregate" not in imalog.derive_volatile([a, b])
-    assert "boot_aggregate" in imalog.protected_that_moved([a, b])
+def test_boot_aggregate_is_always_volatile():
+    # bug #37: unlike the agent's constraint or its code, boot_aggregate is
+    # NOT reproducible across identical cold boots on this project's
+    # LXD/QEMU/OVMF stack (see verifier/imalog.py, ALWAYS_VOLATILE) — a
+    # firmware quirk (QEMU's generated ACPI tables embed boot-time addresses),
+    # not tampering. Excused unconditionally, exactly like the certificate.
+    assert "boot_aggregate" in imalog.derive_volatile([log(("agg1", "x"))])
+    assert not imalog.is_protected("boot_aggregate")
+    assert imalog.is_volatile("boot_aggregate", {"boot_aggregate"})
 
 
 @case

@@ -34,17 +34,20 @@ def boot_log(seed: str, lastlog: str, profile: str = "profile-clean",
              boot_id: str = "0001") -> str:
     """A plausible IMA log for one boot of the workload VM.
 
-    Three rows legitimately move. Systemd rewrites its random seed every boot
+    Four rows legitimately move. Systemd rewrites its random seed every boot
     and sshd updates lastlog on every login the verifier makes — those keep
     their PATH and change their hash, which the calibration can observe. The
     journal segment is the harder class (bug #30): journald names every file
     after the boot id, so the path itself is new each time and NO amount of
-    observing recurring paths can ever predict it.
+    observing recurring paths can ever predict it. boot_aggregate is the
+    fourth (bug #37): tied to boot_id here because on real hardware it is
+    IMA's own per-boot value, never reproducible on this project's
+    LXD/QEMU/OVMF stack even across two boots of the identical snapshot.
     """
     return "\n".join([
         entry("journal-" + boot_id,
               f"/var/log/journal/864e2228/system@{boot_id}-000653.journal"),
-        entry("aggregate", "boot_aggregate"),
+        entry("agg-" + boot_id, "boot_aggregate"),
         entry("sshbin", "/usr/bin/ssh"),
         entry("python", "/usr/bin/python3.14"),
         entry("agentpy", "/var/lib/harden/agent.py"),
@@ -107,8 +110,19 @@ def test_calibration_marks_only_the_genuinely_volatile_paths():
                 if l and not l.startswith("#")}
     assert "/var/lib/systemd/random-seed" in volatile, volatile
     assert "/var/log/lastlog" in volatile, volatile
+    assert "boot_aggregate" in volatile, volatile   # bug #37
     assert "/etc/apparmor.d/harden" not in volatile, volatile
     assert "/var/lib/harden/agent.py" not in volatile, volatile
+
+
+@case
+def test_a_restart_with_a_never_seen_boot_aggregate_still_passes():
+    # bug #37, reproduced and fixed: boot_aggregate is IMA's own value, not
+    # something 70-baseline.sh's calibration reboots can exhaustively sample —
+    # every future cold boot presents one this baseline never saw either.
+    build_baseline(BASELINE)
+    msg = check(boot_log("seed-z", "lastlog-z", boot_id="NEVER-BOOTED-BEFORE"))
+    assert "every measurement recognised" in msg, msg
 
 
 @case

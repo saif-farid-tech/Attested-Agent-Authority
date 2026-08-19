@@ -307,7 +307,16 @@ the round after it — three checks that answered "no" about a perfectly healthy
 machine, one of them at every single cold boot, which is what "it crashes, and
 it will not redo the demo" turned out to mean. #30 is the one that only shows
 up once a build gets all the way to the end: files whose *name* is generated at
-boot, which no allowlist frozen beforehand can contain.
+boot, which no allowlist frozen beforehand can contain. Entries #36–#39 are a
+third reproducibility round, found by actually running the build and the demo
+back to back until every restart passed clean: background timers (a login
+banner, a package-metadata fetch, `sysstat`) that raced the calibration window
+and measured files nothing had frozen; a firmware PCR value that turns out to
+be genuinely different on every boot of this project's LXD/QEMU/OVMF stack,
+not just this machine's; and two commands (`ssh`, `test`) that only the demo
+itself runs, never the baseline that is supposed to describe it. #40 is
+cosmetic but worth knowing about: the certificate countdown could read a large
+negative number on a host whose clock isn't set to UTC.
 
 ## Honest limits
 

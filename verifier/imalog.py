@@ -39,7 +39,6 @@ from fnmatch import fnmatch
 
 # fnmatch's '*' crosses '/', so "/usr/*" covers every depth below /usr.
 PROTECTED: tuple[str, ...] = (
-    "boot_aggregate",
     "/etc/apparmor.d/*",
     "/etc/ima/*",
     "/etc/sudoers",
@@ -59,7 +58,22 @@ PROTECTED: tuple[str, ...] = (
 PROTECTED_EXCEPT: tuple[str, ...] = ("/etc/ssh/harden-cert.pub",)
 PROTECTED_EXTRA: tuple[str, ...] = ("/etc/ssh/*",)
 
-ALWAYS_VOLATILE: tuple[str, ...] = ("/etc/ssh/harden-cert.pub",)
+# bug #37: 'boot_aggregate' — IMA's own summary of the pre-kernel PCRs — was
+# originally PROTECTED on the assumption that it is stable across identical
+# boots, the same way the agent's own files are. It isn't, on this project's
+# LXD/QEMU/OVMF stack: `tpm2_eventlog` on two cold boots of the byte-identical
+# 'demo-ready' snapshot showed every event IDENTICAL except one — EventNum 13,
+# PCRIndex 1, EV_PLATFORM_CONFIG_FLAGS ("ACPI DATA") — whose recorded digest
+# differed both times. OVMF's generated ACPI tables embed boot-time addresses
+# (a documented QEMU/OVMF measured-boot quirk, unrelated to this project), so
+# PCR1 — and therefore boot_aggregate — is never reproducible here, tamper or
+# not. Treating it as PROTECTED gave zero detective power (it never matched
+# twice) while failing attestation on literally every cold boot: baseline's
+# own final proof, 'make reset', and ACT 0 of every 'make demo' alike. That is
+# the other half of "the demo works, but won't restart" — bug #15 fixed the
+# userspace files that vary by design; this is the same fact one layer down,
+# at the firmware measurement IMA reports as its very first log line.
+ALWAYS_VOLATILE: tuple[str, ...] = ("/etc/ssh/harden-cert.pub", "boot_aggregate")
 
 # Paths whose FILE NAME is generated at run time (bug #30). A calibration can
 # only observe a path moving if the path recurs; these never recur, so five

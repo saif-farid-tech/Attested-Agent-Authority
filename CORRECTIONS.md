@@ -553,3 +553,182 @@ Two things were wrong, and both are fixed:
   two-verifiers case (bug #22) still blocks — a test asserts both directions,
   so the fix cannot quietly degrade into "always take the lock."
 (`verifier/verifier.py`, `tests/test_restart_scenario.py`)
+
+## 36. A login-triggered MOTD rewrite fails attestation on almost every restart
+
+`make build` reached the very last step — proving one full attestation from
+the demo-ready snapshot's own cold boot — and failed there, every time, with
+five measurements never seen during calibration: `/usr/bin/dirname`,
+`/usr/bin/mv`, `/usr/bin/touch`, `/usr/bin/chown`, and
+`/var/lib/landscape/landscape-sysinfo.cache`. `make reset` and `make demo`
+fail the identical way on restart, for the identical reason.
+
+`/etc/update-motd.d/50-landscape-sysinfo` refreshes its cache **synchronously,
+as root** the moment it is more than 60 seconds stale — via `pam_motd` on the
+very next SSH login — rewriting the cache file with `mv`/`touch`/`chown`. Every
+cold boot this project does (`70-baseline.sh`'s calibration reboots, `make
+reset`, ACT 0 of `make demo`) takes well over 60 seconds before the first
+SSH-based attestation runs, so that first login is reliably the one that
+regenerates the cache. And it is the one login nothing calibrates for: every
+other read of the post-boot state is a root `lxc exec` (no SSH, no PAM
+session), so `capture_log` never sees what an actual SSH login measures. The
+allowlist is frozen from state that the real attestation immediately moves
+past — a race the baseline's own login-based warm-up cycles (bug #15) don't
+close, because they run on a *different* boot than the one the demo restores
+into.
+
+**Fix:** disable the script outright — `chmod -x
+/etc/update-motd.d/50-landscape-sysinfo` — during provisioning, the same
+treatment already given to `apport` (bug #9). A login banner showing uptime
+and load average is not worth a nondeterministic, root-triggered measurement
+every single restart. (`scripts/20-workload.sh`)
+
+## 37. `boot_aggregate` — protected on the assumption it can never move — does, every boot
+
+Fixing bug #36 was not enough: `make build` still failed its final proof, now
+on five *different* measurements — `/usr/bin/test`, `/usr/bin/ssh`, and
+several `python3-dist-packages/debian/__pycache__/*.pyc` files (chased down in
+bug #38) — and `boot_aggregate` itself. `boot_aggregate` is IMA's own summary
+of the pre-kernel TPM PCRs, written as the very first line of every
+measurement log, and `verifier/imalog.py` had it in `PROTECTED`: the one
+category that may *never* be excused, on the theory that if it ever varies,
+something below the OS changed and that is exactly the tampering this project
+exists to catch.
+
+That theory assumes `boot_aggregate` is reproducible across identical boots of
+identical software — true on real hardware with measured boot, but tested
+directly here and **false** on this project's LXD/QEMU/OVMF stack:
+
+```sh
+lxc stop harden --force && lxc restore harden demo-ready && lxc start harden
+# … wait for the VM to settle …
+lxc exec harden -- grep boot_aggregate /sys/kernel/security/ima/ascii_runtime_measurements
+```
+
+run three times from the byte-identical snapshot, printed three different
+hashes. `tpm2_eventlog` on two of those runs isolated it to a single TCG
+event — `EventNum 13`, `PCRIndex 1`, `EV_PLATFORM_CONFIG_FLAGS` ("ACPI
+DATA") — whose recorded digest differed both times while every other event in
+a 2,089-line log matched exactly. This is a documented QEMU/OVMF quirk: the
+firmware's generated ACPI tables embed boot-time addresses, so PCR1 — and
+therefore `boot_aggregate` — is never reproducible in this virtualised stack,
+tamper or not. Protecting it bought zero detective power (it never matched
+twice, so it could never distinguish a clean boot from a tampered one here)
+while failing attestation on literally every cold boot: baseline's own final
+proof, `make reset`, and ACT 0 of every `make demo` alike — the other half of
+"the demo works, but won't restart," one layer below bug #15's userspace
+files.
+
+**Fix:** move `boot_aggregate` out of `PROTECTED` and into `ALWAYS_VOLATILE`,
+excused unconditionally exactly like the rotating certificate (bug #15) —
+never by a calibration window that happens to observe it moving, since on
+this stack it always does. `tests/test_imalog.py` and
+`tests/test_restart_scenario.py` are updated to model that reality — the
+latter's synthetic boot logs used to hard-code a single `"aggregate"` hash for
+every simulated boot, which is exactly why no test caught this: nothing in
+the suite had ever modeled `boot_aggregate` actually changing.
+(`verifier/imalog.py`, `tests/test_imalog.py`, `tests/test_restart_scenario.py`)
+
+## 38. A whole class of background timers races the same calibration window
+
+The measurements bug #37 shared the log with — `/usr/bin/test`, `/usr/bin/ssh`,
+several `python3-dist-packages/debian/__pycache__/*.pyc` files, and later
+`/usr/lib/sysstat/debian-sa1` — turned out to be two more independent
+instances of bug #36's category, not stragglers from it, and they kept
+arriving one at a time as each fix uncovered the next:
+
+- `update-notifier-download.timer` ships with `OnStartupSec=5m`: no jitter, no
+  `RandomizedDelaySec`, a flat five minutes after every boot, running
+  `/usr/lib/update-notifier/package-data-downloader` as root — which imports
+  Python's `debian` module (compiling its `__pycache__` fresh) and shells out
+  to `test`/`ssh` while fetching package metadata nobody asked for.
+- `sysstat-collect.timer` fires every 10 minutes, on the clock, running
+  `/usr/lib/sysstat/debian-sa1` as root.
+
+`70-baseline.sh`'s calibration (two cold boots, an agent run, two warm-up
+attestations, a stop, a snapshot, a restart) and a full `make demo` both
+comfortably exceed both of those windows end to end, so each timer's firing
+point lands unpredictably inside or outside the calibration window depending
+on how long LXD and the network happened to take that particular run — a race
+with a fixed clock on one side and a variable one on the other. Fixing them
+by name one at a time doesn't converge: `motd-news.timer` fires
+`OnStartupSec=1m`, and `fwupd-refresh.timer`'s `RandomizedDelaySec=1h` can
+land anywhere in the first hour, so the demo would keep failing for a new
+reason every few runs.
+
+**Fix:** stop discovering these one at a time and mask the whole class up
+front — `systemctl disable --now` on every non-essential timer the stock
+Ubuntu image ships (package/security timers, sysstat, fwupd, motd-news,
+logrotate, fstrim, e2scrub, dpkg's db backup, man-db), the same treatment
+already given to `apport` (bug #9) and landscape-sysinfo (bug #36). None of
+them are needed for anything this project measures.
+(`scripts/20-workload.sh`)
+
+## 39. The baseline never exercises the exact commands a restart runs
+
+Masking the timers (bug #38) fixed every *intermittent* offender, but
+`/usr/bin/test` and `/usr/bin/ssh` kept failing attestation on **every**
+restart, deterministically — not a race at all. `70-baseline.sh`'s own
+comment claimed running the agent once during calibration exercises "the ssh
+client," but `agent.py`'s `remediate_fleet()` returns before ever calling
+`ssh()` when no certificate exists yet — exactly the case during baseline,
+since the verifier hasn't started. So neither `/usr/bin/ssh` nor
+`/usr/bin/test` is executed by *anything* during calibration.
+
+But both run on every real restore: `reset.sh`'s own closing guard executes
+`sudo -u harden test -w /etc/apparmor.d/harden`, and `90-demo.sh`'s ACT 2
+immediately loops `ssh … harden@web-01 true` waiting for a certificate. Both
+are fresh `BPRM_CHECK` measurements that no calibration boot ever produced —
+a permanent gap between what baseline measures and what a restart actually
+does, unrelated to anything being volatile.
+
+**Fix:** `70-baseline.sh` now runs those exact two commands itself during
+calibration, right after exercising the agent. The `ssh` attempt is expected
+to fail (no certificate exists yet) — only the *exec*, not the outcome, is
+what IMA needs to see; a failed connection still loads and measures the
+binary. (`scripts/70-baseline.sh`)
+
+## 40. The certificate countdown reads "valid for -14341s" on a non-UTC host
+
+With bugs #36–#39 fixed, the demo finally ran end to end — and ACT 2 announced
+"certificate valid for -14341s — the agent is FUNDED," a funded agent
+reporting a certificate that supposedly expired four hours ago. Cosmetic, not
+a restart blocker, but it makes a working demo look broken on camera.
+
+`cert_seconds_left()` in `90-demo.sh` reads the certificate's expiry with
+`ssh-keygen -L` run **inside the VM**, which prints the time in the VM's own
+local zone with no UTC/offset suffix — the VM runs UTC. That string is then
+parsed with `date -d` on the **host**, which assumes its own local zone for
+any timestamp without one. On a host already set to UTC the two zones happen
+to agree and nobody notices; on any other zone (this one is UTC+4) the
+countdown is silently off by exactly the zone difference — 14,400 seconds,
+matching the observed error almost exactly.
+
+**Fix:** parse the timestamp as `"$exp UTC"` instead of `"$exp"`, telling
+`date -d` explicitly which zone the string is already in rather than letting
+it assume the host's own. (`scripts/90-demo.sh`)
+
+## 41. The demo's own verifier gets killed before its last events are read
+
+Found while adding an act tracker to the console: `status.json` was missing
+ACT 8's last three events every single run — the agent's repentance, the
+"attestation STILL fails" result, and (once added) the CURTAIN marker — even
+though the terminal printed all of them correctly. The console silently
+stopped mid-story at "DRAINING," with no resolution ever shown, on every demo.
+
+`console_event()` only *writes* a line to `console-events.jsonl`; a verifier
+process has to be alive and polling to *read* it into `status.json`.
+`90-demo.sh` starts its own verifier when none is running and kills it with
+`stop_demo_verifier` on the script's `EXIT` trap. That trap fires the instant
+the script's last command finishes — which, for ACT 8, was within a couple of
+seconds of three more `console_event` calls. The verifier's dropbox poll only
+runs every ~2 seconds (`ingest_dropbox` in the "fast lane" of its main loop),
+so the kill signal routinely arrived before that poll ever ran again, and the
+events sat unread in `console-events.jsonl` forever — silently, since a lost
+line there was already documented as an acceptable failure mode for narration
+lost *mid-run*, not for a demo's entire ending.
+
+**Fix:** `sleep 3` right before the script exits, after every event ACT 8 will
+ever emit has already been written — one guaranteed fast-lane cycle for the
+verifier to ingest and publish them before `stop_demo_verifier` kills it.
+(`scripts/90-demo.sh`)

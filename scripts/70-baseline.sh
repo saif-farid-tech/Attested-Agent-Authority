@@ -82,11 +82,32 @@ ok "captured two cold-boot measurement logs"
 
 # ---- run the agent once so everything it touches gets measured -------------
 # No certificate exists yet, so the pass reports NO AUTHORITY on every host —
-# expected. What matters is that python, agent.py, config.json and the ssh
-# client are all read/executed and therefore land in the IMA log.
+# expected. What matters is that python, agent.py and config.json are all
+# read/executed and therefore land in the IMA log.
 vm_exec --user harden python3 "$AAA_VM_STATE/agent.py" || true
 vm_exec apparmor_parser -r /etc/apparmor.d/harden   # ensure the profile is in the log too
 ok "agent exercised; its dependencies are now in the IMA measurement log"
+
+# ---- exercise what reset.sh and the demo ACTUALLY run on a restore ---------
+# bug #39: the comment above used to claim the agent's early pass exercises
+# "the ssh client" too — it doesn't. remediate_fleet() returns before calling
+# ssh() at all when no certificate exists (exactly the case here), so
+# /usr/bin/ssh is never executed by anything in this baseline. But it IS
+# executed on every real restore: reset.sh's own closing guard runs `sudo -u
+# harden test -w /etc/apparmor.d/harden`, and 90-demo.sh's ACT 2 immediately
+# runs `ssh … harden@web-01 true` in a loop. Both are new BPRM_CHECK
+# measurements of /usr/bin/test and /usr/bin/ssh that no calibration boot ever
+# produced — a permanent mismatch on every single restart, not a timing race
+# like bugs #36/#38. Run the exact commands here so their measurements land in
+# the allowlist; the ssh attempt is expected to fail (no cert yet) — only the
+# exec, not the outcome, is what IMA needs to see.
+vm_exec sh -c 'sudo -u harden test -w /etc/apparmor.d/harden' || true
+vm_exec --user harden sh -c \
+  'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
+       -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+       -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+       harden@web-01 true' || true
+ok "test/ssh exec paths exercised (matches what reset.sh and ACT 2 run on a restore)"
 
 # ---- provisional allowlist so the warm-up attestations can run at all ------
 # (stage 1 refuses an empty allowlist, and now also refuses an unsigned one.)

@@ -43,6 +43,36 @@
   #conn.live    { color: var(--ember);  border-color: var(--ember); }
   #conn.offline { color: var(--muted); }
 
+  /* -------- story banner: which of the 9 acts is playing, in plain words --
+     Designed to stand on its own with no narrator — a viewer scrubbing a
+     recording should be able to tell the whole story from this box alone. */
+  #story { border: 1px solid var(--line); border-radius: 10px;
+           background: linear-gradient(180deg, var(--panel), var(--ink));
+           padding: 1rem 1.3rem; margin-bottom: 1.4rem; }
+  #story-top { display: flex; align-items: baseline; gap: .7rem; margin-bottom: .55rem; }
+  #story-tag { font-size: .72rem; font-weight: 700; letter-spacing: .1em;
+               color: var(--muted); flex: none; }
+  #story-title { font-size: 1.25rem; font-weight: 700; }
+  #story-caption { color: var(--text); font-size: 1rem; max-width: 78ch;
+                    margin-bottom: .8rem; }
+  #steps { display: grid; grid-template-columns: repeat(9, 1fr); gap: .3rem; }
+  @media (max-width: 900px) { #steps { grid-template-columns: repeat(3, 1fr); } }
+  .step-box { border-radius: 5px; padding: .35rem .1rem; text-align: center;
+              background: var(--ink); border: 1px solid var(--line);
+              font-size: .62rem; letter-spacing: .03em; color: var(--muted);
+              line-height: 1.3; }
+  .step-box .n { display: block; font-family: 'Ubuntu Mono', ui-monospace, monospace;
+                 font-size: .68rem; color: var(--muted); margin-bottom: .1rem; }
+  .step-box.done { border-color: var(--ember); color: var(--text); }
+  .step-box.done .n { color: var(--ember); }
+  .step-box.now  { border-color: var(--ember); background: rgba(255,106,44,.14);
+                    color: var(--text); box-shadow: 0 0 0 1px var(--ember) inset; }
+  .step-box.now .n { color: var(--ember); }
+  .step-box.now.tamper-step { border-color: var(--alarm);
+                               box-shadow: 0 0 0 1px var(--alarm) inset; }
+  .step-box.now.tamper-step .n { color: var(--alarm); }
+  #story.tamper #story-tag, #story.tamper #story-title { color: var(--alarm); }
+
   /* -------- agent hero: the autonomous actor, foregrounded -------- */
   #agent-hero { border: 1px solid var(--line); border-radius: 10px;
                 background: linear-gradient(180deg, var(--panel), var(--ink));
@@ -152,6 +182,19 @@
   <span id="conn" class="mono">connecting…</span>
 </header>
 
+<!-- The story, front and centre: which of the 9 acts is playing right now,
+     in plain English, with a strip showing where that sits in the whole
+     arc. Meant to stand on its own — no narrator required. -->
+<section id="story">
+  <div id="story-top">
+    <span id="story-tag" class="mono">ACT — OF 9</span>
+    <span id="story-title">Waiting to start</span>
+  </div>
+  <div id="story-caption">Run <code>make demo</code> to begin. This panel
+    will track the story beat by beat as it plays.</div>
+  <div id="steps"></div>
+</section>
+
 <!-- The autonomous agent, front and centre: who it is, what it's doing now,
      and whether it still has the authority to do it. -->
 <section id="agent-hero">
@@ -200,12 +243,12 @@
   <div class="node" id="n-tpm">
     <h3><span class="dot"></span>TPM</h3>
     <div class="who">vault chip · cannot sign a lie</div>
-    <div class="st" id="s-tpm">quoting PCR 10 honestly</div>
+    <div class="st" id="s-tpm">proves its fingerprint is genuine (PCR 10)</div>
   </div>
   <div class="node" id="n-ver">
     <h3><span class="dot"></span>Verifier</h3>
     <div class="who">separate machine · every 30 s</div>
-    <div class="st" id="s-ver">signature ✓ replay ✓ allowlist ✓</div>
+    <div class="st" id="s-ver">all three checks pass ✓</div>
   </div>
   <div class="node" id="n-ca">
     <h3><span class="dot"></span>CA</h3>
@@ -250,6 +293,51 @@ function setChainIdle(text) {
   for (const id of ["agent", "ima", "tpm", "ver", "ca", "fleet"]) node(id, "off", text);
 }
 
+/* ---- story banner: which of the 9 acts is playing, from the verifier's own
+        "phase" events (emitted by 90-demo.sh's phase() helper) — never
+        inferred, so this can never show a beat that didn't really happen. */
+const STEP_LABELS = ["Reset", "Sabotage", "Funded", "Cleanup", "Attacks Fail",
+                      "The Tamper", "Caught", "Draining", "No Undo"];
+function renderSteps(current, allDone) {
+  $("steps").innerHTML = STEP_LABELS.map((label, i) => {
+    const cls = allDone ? "done"
+      : i < current ? "done" : i === current ? "now" + (i >= 5 ? " tamper-step" : "") : "";
+    return `<div class="step-box${cls ? " " + cls : ""}"><span class="n">${i}</span>${label}</div>`;
+  }).join("");
+}
+function renderStoryIdle() {
+  $("story").className = "";
+  $("story-tag").textContent = "ACT — OF 9";
+  $("story-title").textContent = "Waiting to start";
+  $("story-caption").textContent =
+    "Run 'make demo' to begin. This panel will track the story beat by beat as it plays.";
+  renderSteps(-1, false);
+}
+function renderStory(st) {
+  const events = st.events || [];
+  const curtain = events.find(e => e.kind === "curtain");
+  const phase = events.find(e => e.kind === "phase");
+  // Whichever of the two was reported most recently wins — events are
+  // newest-first, so compare their position rather than their timestamp
+  // (narration events share a clock with best-effort ordering only).
+  if (curtain && (!phase || events.indexOf(curtain) < events.indexOf(phase))) {
+    $("story").className = "";
+    $("story-tag").textContent = "SHOW COMPLETE";
+    $("story-title").textContent = "Curtain";
+    $("story-caption").textContent = curtain.text;
+    renderSteps(9, true);
+    return;
+  }
+  if (!phase) { renderStoryIdle(); return; }
+  const [n, total, title, caption] = phase.text.split("|");
+  const num = parseInt(n, 10);
+  $("story").className = num >= 5 ? "tamper" : "";
+  $("story-tag").textContent = `ACT ${n} OF ${total}`;
+  $("story-title").textContent = title;
+  $("story-caption").textContent = caption;
+  renderSteps(num, false);
+}
+
 /* ---- honest "no live data" state — never a fabricated arc --------------- */
 function renderOffline(msg) {
   $("headline").textContent = "NO LIVE DATA";
@@ -260,6 +348,7 @@ function renderOffline(msg) {
   $("countdown").textContent = "—";
   document.body.classList.remove("dead");
   setChainIdle("awaiting verifier");
+  renderStoryIdle();
   $("events").innerHTML = "";
   $("agent-hero").className = "";
   $("agent-pill").textContent = "OFFLINE";
@@ -306,6 +395,8 @@ function render(st, stale) {
     : "";
   const h = $("headline"), sub = $("subline");
 
+  renderStory(st);
+
   if (dead) {
     h.textContent = "NO AUTHORITY"; h.className = "dead-h";
     sub.textContent = staleNote + "The certificate has expired and the verifier "
@@ -339,15 +430,15 @@ function render(st, stale) {
   if (funded) {
     node("agent", "", "working the fleet");
     node("ima",   "", "hashing all it runs & reads");
-    node("tpm",   "", "quoting PCR 10 honestly");
-    node("ver",   "", "signature ✓ replay ✓ allowlist ✓");
+    node("tpm",   "", "proves its fingerprint is genuine (PCR 10)");
+    node("ver",   "", "all three checks pass ✓");
     node("ca",    "", "issuing on every pass");
     node("fleet", "", "obeys a valid certificate");
   } else if (tampered) {
-    node("agent", "bad", dead ? "powerless (still has root)" : "modified its own profile");
-    node("ima",   "doomed", "change logged — log is append-only");
-    node("tpm",   "", "quoting honestly — reports the change");
-    node("ver",   "bad", "signature ✓ replay ✓ allowlist ✗");
+    node("agent", "bad", dead ? "out of power (still has root over itself)" : "changed its own rulebook");
+    node("ima",   "doomed", "recorded the change — can't be erased");
+    node("tpm",   "", "still tells the truth — reports the change");
+    node("ver",   "bad", "everything checks out, except the file list ✗");
     node("ca",    "bad", "refusing to sign");
     node("fleet", dead ? "bad" : "doomed",
          dead ? "refuses — certificate expired"
@@ -387,6 +478,7 @@ async function poll() {
       + "shows only what the verifier actually reports.");
   }
 }
+renderStoryIdle();
 setInterval(poll, 1000);
 poll();
 </script>

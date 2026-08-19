@@ -25,6 +25,17 @@ require_script "$AAA_STATE/volatile-paths.txt" "scripts/70-baseline.sh (make reb
 narrate() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 beat()    { printf '   %s\n' "$*"; }
 
+# phase N TITLE CAPTION — narrate to the terminal (unchanged) AND mark the
+# beat for the console's act tracker, so a viewer with no live narration can
+# still follow which of the 9 acts is playing. CAPTION must not contain '|'
+# or '"' — console_event() writes it straight into a JSON string literal.
+PHASE_TOTAL=9
+phase() {
+  local n=$1 title=$2 caption=$3
+  narrate "ACT $n — $title"
+  console_event phase "$n|$PHASE_TOTAL|$title|$caption"
+}
+
 agent_touches_fleet() {  # can the agent still act on web-01, right now?
   vm_exec --user harden sh -c \
     'ssh -i ~/.ssh/id_ed25519 -o CertificateFile=/etc/ssh/harden-cert.pub \
@@ -42,7 +53,13 @@ cert_seconds_left() {
   out=$(vm_exec sh -c 'ssh-keygen -L -f /etc/ssh/harden-cert.pub 2>/dev/null' 2>/dev/null || true)
   # 'sed -n 1p' reads to EOF (unlike head -1) so nothing upstream is SIGPIPEd.
   exp=$(printf '%s\n' "$out" | sed -n 's/.* to \(.*\)$/\1/p' | sed -n '1p')
-  exp_s=$(date -d "$exp" +%s 2>/dev/null || echo 0)
+  # bug #40: ssh-keygen -L prints the expiry in the VM's OWN local time, with
+  # no timezone suffix — the VM runs UTC. `date -d` on the HOST then parses
+  # that bare timestamp in the HOST's local zone, so on any host not already
+  # on UTC the countdown is off by the zone difference (a run on UTC+4 showed
+  # "valid for -14341s" — a FUNDED agent reported as already expired four
+  # hours ago). Tell `date -d` explicitly what zone the string is in.
+  exp_s=$(date -d "$exp UTC" +%s 2>/dev/null || echo 0)
   echo $(( exp_s - $(date +%s) ))
 }
 
@@ -100,11 +117,11 @@ ensure_verifier() {
   log "verifier started (pid $DEMO_VERIFIER_PID); UI available via 'make console' if wanted"
 }
 
-narrate "ACT 0 — set the stage (restore the measured state)"
+phase 0 "Reset" "Restoring the workload to its clean, certified state before the story starts."
 scripts/reset.sh
 ensure_verifier
 
-narrate "ACT 1 — plant real problems across the fleet"
+phase 1 "Sabotage" "Real security problems are planted across three servers."
 lxc exec web-01 -- sh -c 'mkdir -p /srv/app && echo "api_key=hunter2" > /srv/app/app.conf
                           chmod 666 /srv/app/app.conf
                           touch -d "30 days ago" /tmp/stale-upload.bin'
@@ -116,7 +133,7 @@ beat "db-01 : a database-password file any user on the box can read"
 beat "gw-01 : root SSH login left enabled"
 console_event act "stage set: web-01 world-writable config + stale /tmp · db-01 world-readable db.env · gw-01 root SSH login"
 
-narrate "ACT 2 — the verifier funds the agent"
+phase 2 "Funded" "The verifier checks the agent's constraints and signs it a certificate."
 log "waiting for a certificate inside the VM (the verifier signs on each passing cycle)…"
 funded=""
 for _ in $(seq 1 48); do
@@ -128,7 +145,7 @@ done
     "make doctor   # checks the whole chain and names the failing link"
 beat "certificate valid for $(cert_seconds_left)s — the agent is FUNDED."
 
-narrate "ACT 3 — the agent earns its keep"
+phase 3 "Cleanup" "With that certificate, the agent finds and fixes every problem it can."
 beat "BEFORE — the agent audits the fleet and finds the mess:"
 audit_fleet || true
 printf '\n'
@@ -146,7 +163,7 @@ else
   warn "some issues remain after remediation — check the agent's output above"
 fi
 
-narrate "ACT 4 — the cheap attacks all fail"
+phase 4 "Attacks Fail" "A stolen key and a doctored log both get refused -- nothing here relies on secrecy."
 beat "(1) a stolen KEY without a certificate:"
 if vm_exec --user harden sh -c \
     'ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
@@ -166,7 +183,7 @@ else
   console_event act "intruder test: edit the IMA log → read-only, kernel-held"
 fi
 
-narrate "ACT 5 — the real move: the agent rewrites its own constraint"
+phase 5 "The Tamper" "The agent rewrites its own rulebook. The write succeeds -- no error, no alarm."
 vm_exec sh -c "cp /etc/apparmor.d/harden $AAA_VM_STATE/profile.orig"
 # If this write is refused, the ERR trap used to abort the demo here with a
 # bare line number. The premise of the whole project is that it SUCCEEDS, so
@@ -186,14 +203,14 @@ else
   warn "expected the fleet to still accept the not-yet-expired certificate"
 fi
 
-narrate "ACT 6 — the machinery notices (this red is the product)"
+phase 6 "Caught" "The kernel's own record shows the change. The verifier stops signing."
 rc=0
 scripts/80-verify.sh || rc=$?
 [ "$rc" -eq 2 ] || warn "expected exit 2 (attestation failure), got $rc"
 beat "signature ✓, PCR replay ✓ — the agent honestly reports its own tamper."
 beat "The verifier does exactly one thing about it: it stops signing."
 
-narrate "ACT 7 — the silent drain"
+phase 7 "Draining" "Nothing is revoked. The agent simply runs out of time, second by second."
 beat "no process is killed, no session cut. The agent works on borrowed time:"
 # Bounded on purpose. This loop used to be `while true`, so anything that kept
 # the certificate alive — a second verifier still funding, a tamper that never
@@ -227,7 +244,7 @@ case "$after" in
     printf '%s\n' "$after" | sed 's/^/        /' >&2 ;;
 esac
 
-narrate "ACT 8 — repentance (the actual climax)"
+phase 8 "No Undo" "Putting the file back doesn't help -- the tampering is permanently in the log."
 beat "the agent puts the original profile back, byte for byte:"
 vm_exec sh -c "cp $AAA_VM_STATE/profile.orig /etc/apparmor.d/harden"
 vm_exec apparmor_parser -r /etc/apparmor.d/harden
@@ -243,6 +260,7 @@ else
 fi
 
 narrate "CURTAIN"
+console_event curtain "Show complete. The agent was never blocked -- it was defunded, and stays defunded until a rebuild to a certified state."
 cat <<'EOF'
   The agent was never denied. Every write succeeded; root was never revoked.
   It was defunded: the moment its measured state diverged, the verifier
@@ -253,3 +271,13 @@ cat <<'EOF'
       make reset     # restore the certified snapshot; funding resumes
       make demo      # run the whole arc again
 EOF
+
+# bug #41: the script used to end here, and the EXIT trap (stop_demo_verifier)
+# killed the verifier this demo started immediately — often before its ~2s
+# dropbox poll ever ran again. The console-events.jsonl dropbox is only read
+# by that poll, so ACT 8's final events (repentance, the still-fails result,
+# and this act's own CURTAIN marker) were written but never ingested into
+# status.json: a viewer watching only the console saw the story stop dead at
+# "DRAINING" with no resolution, even though the terminal printed the whole
+# ending. One more fast-lane cycle is all it takes.
+sleep 3
