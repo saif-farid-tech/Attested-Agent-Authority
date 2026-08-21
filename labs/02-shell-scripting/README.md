@@ -14,6 +14,7 @@ exit codes, and traps that report the failing line when something goes wrong.
 ## What you will need
 
 - The same Ubuntu machine from previous modules.
+- About 35-45 minutes.
 
 ## Concepts
 

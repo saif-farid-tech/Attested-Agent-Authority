@@ -19,6 +19,7 @@ Complete these modules first:
 - A computer running Ubuntu 22.04 or 24.04 with at least 6 GB of free memory
   and 20 GB of free disk space.
 - An internet connection (for downloading VM images the first time).
+- About 25-35 minutes.
 
 ## Concepts
 

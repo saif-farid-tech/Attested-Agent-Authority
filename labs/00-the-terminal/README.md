@@ -13,6 +13,7 @@ None. This is the first module.
 ## What you will need
 
 - A computer running Ubuntu 22.04 or 24.04 (a fresh install is fine).
+- About 20-30 minutes.
 
 ## Concepts
 

@@ -17,6 +17,7 @@ Complete these modules first:
 
 - A computer running Ubuntu 22.04 or 24.04.
 - No special hardware or packages -- `sha256sum` is included with Ubuntu.
+- About 20-30 minutes.
 
 ## Concepts
 

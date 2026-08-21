@@ -13,6 +13,7 @@ alone cannot constrain it, and why AppArmor (Module 08) exists.
 ## What you will need
 
 - The same Ubuntu machine from Module 00.
+- About 25-35 minutes.
 
 ## Concepts
 

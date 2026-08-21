@@ -21,6 +21,7 @@ Complete these modules first:
 - LXD installed and initialized (from Module 04).
 - No additional packages -- `ssh`, `ssh-keygen`, and `sshd` are included with
   Ubuntu.
+- About 20-30 minutes.
 
 ## Concepts
 

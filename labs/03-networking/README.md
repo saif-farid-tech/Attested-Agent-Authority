@@ -17,6 +17,7 @@ to find the fleet servers.
 
 - The same Ubuntu machine from previous modules.
 - A working internet connection (for the ping exercises).
+- About 25-35 minutes.
 
 ## Concepts
 

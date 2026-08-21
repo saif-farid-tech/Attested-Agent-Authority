@@ -48,21 +48,21 @@ that later labs assume you have.
 
 ## What each module covers
 
-| Module | Title | What you learn |
-|--------|-------|----------------|
-| 00 | The Terminal | Opening a terminal, navigating the filesystem, running commands |
-| 01 | Files, Users, Permissions | How Linux controls who can read, write, and execute what |
-| 02 | Shell Scripting | Writing scripts that automate tasks safely and repeatably |
-| 03 | Networking | IP addresses, ports, bridges, and how machines find each other |
-| 04 | Virtual Machines (LXD) | Creating and managing VMs and containers with LXD |
-| 05 | Cryptographic Hashing | How one-way fingerprints detect even a single changed byte |
-| 06 | SSH Fundamentals | Connecting to remote machines securely with key pairs |
-| 07 | SSH Certificates | Short-lived, scoped authority instead of permanent keys |
-| 08 | AppArmor | Constraining what even the root user can do |
-| 09 | TPM and Trusted Hardware | A chip that cannot lie about what it measured |
-| 10 | IMA (Integrity Measurement) | The kernel logging every file the agent touches |
-| 11 | The Attestation Pipeline | Tying measurement, quoting, and signing into one loop |
-| 12 | The Complete System | Building and running the full Attested Agent Authority demo |
+| Module | Title | What you learn | Time |
+|--------|-------|----------------|------|
+| 00 | The Terminal | Opening a terminal, navigating the filesystem, running commands | 20-30 min |
+| 01 | Files, Users, Permissions | How Linux controls who can read, write, and execute what | 25-35 min |
+| 02 | Shell Scripting | Writing scripts that automate tasks safely and repeatably | 35-45 min |
+| 03 | Networking | IP addresses, ports, bridges, and how machines find each other | 25-35 min |
+| 04 | Virtual Machines (LXD) | Creating and managing VMs and containers with LXD | 25-35 min |
+| 05 | Cryptographic Hashing | How one-way fingerprints detect even a single changed byte | 20-30 min |
+| 06 | SSH Fundamentals | Connecting to remote machines securely with key pairs | 20-30 min |
+| 07 | SSH Certificates | Short-lived, scoped authority instead of permanent keys | 30-40 min |
+| 08 | AppArmor | Constraining what even the root user can do | 15-20 min |
+| 09 | TPM and Trusted Hardware | A chip that cannot lie about what it measured | 20-25 min |
+| 10 | IMA (Integrity Measurement) | The kernel logging every file the agent touches | 15-20 min |
+| 11 | The Attestation Pipeline | Tying measurement, quoting, and signing into one loop | 20-25 min |
+| 12 | The Complete System | Building and running the full Attested Agent Authority demo | 30-45 min |
 
 ## What you will be able to do by the end
 

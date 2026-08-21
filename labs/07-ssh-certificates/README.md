@@ -18,6 +18,7 @@ Complete these modules first:
 
 - A computer running Ubuntu 22.04 or 24.04.
 - LXD installed and initialized (from Module 04).
+- About 30-40 minutes.
 
 ## Concepts
 
